@@ -183,6 +183,3 @@ function peak_table(peaks::Vector{PeakInfo})
 
     return join(lines, "\n")
 end
-
-# Helper for Statistics.mean on diff
-mean(x) = sum(x) / length(x)

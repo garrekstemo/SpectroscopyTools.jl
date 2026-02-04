@@ -166,8 +166,6 @@ Gaussian pump and probe pulses.
 """
 pulse_fwhm(sigma_irf) = FWHM_FACTOR * sigma_irf / sqrt(2)
 
-# Helper
-mean(x) = sum(x) / length(x)
 
 # =============================================================================
 # Multi-exponential IRF convolution
