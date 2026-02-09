@@ -41,7 +41,11 @@ Coefficients are in ascending order: `c[1] + c[2]*λ + c[3]*λ² + ...`
 """
 function polynomial(cal::ChirpCalibration)
     c = cal.poly_coeffs
-    return λ -> sum(c[i] * λ^(i-1) for i in eachindex(c))
+    return λ -> _polyeval(c, λ)
+end
+
+function Base.show(io::IO, cal::ChirpCalibration)
+    print(io, "ChirpCalibration: order $(cal.poly_order), R² = $(round(cal.r_squared, digits=4)), $(length(cal.wavelength)) points")
 end
 
 function Base.show(io::IO, ::MIME"text/plain", cal::ChirpCalibration)
@@ -62,19 +66,8 @@ report(cal::ChirpCalibration) = (show(stdout, MIME("text/plain"), cal); println(
 """
     subtract_background(matrix::TAMatrix; t_range=nothing) -> TAMatrix
 
-Subtract pre-pump background from a TA matrix.
-
-TA is already a difference measurement, so signal before the pump arrives should
-be zero. Any residual is systematic background (detector offset, scatter, etc.).
-This function averages rows in the baseline region and subtracts from every row.
-
-# Arguments
-- `matrix`: Input TAMatrix
-- `t_range`: Time range tuple `(t_start, t_end)` for baseline region (ps).
-  Default: auto-detect using the region before 80% of the way to signal onset.
-
-# Returns
-New `TAMatrix` with background subtracted. Original data is not modified.
+Subtract pre-pump background from a TA matrix by averaging and removing
+the signal in the baseline region (before pump arrival).
 """
 function subtract_background(matrix::TAMatrix; t_range::Union{Tuple,Nothing}=nothing)
     time = matrix.time
@@ -133,55 +126,18 @@ end
 """
     detect_chirp(matrix::TAMatrix; kwargs...) -> ChirpCalibration
 
-Automatically detect chirp (group velocity dispersion) in a broadband TA matrix.
-
-Two detection methods are available:
-
-- **`:xcorr`** (default) — Cross-correlates the absolute onset gradient of
-  each wavelength bin against the strongest-signal bin. Using the gradient
-  makes detection polarity-independent (ESA and GSB both produce a spike at
-  onset). Parabolic interpolation gives sub-time-step precision.
-
-- **`:threshold`** — Half-maximum threshold crossing. For each wavelength
-  bin, finds the first time the smoothed absolute signal exceeds `onset_frac`
-  of the bin's maximum. Simpler, no reference column dependency.
-
-Wavelength bins with weak signal (below `min_signal` fraction of the global
-maximum) are automatically excluded. If the diagnostic plot shows missing
-coverage, try lowering `min_signal`.
-
-# Keyword Arguments
-- `method::Symbol=:xcorr`: Detection method (`:xcorr` or `:threshold`)
-- `order::Int=3`: Polynomial order for chirp fit
-- `smooth_window::Int=15`: Savitzky-Golay window for signal smoothing (must be odd)
-- `reference::Union{Float64,Symbol}=:center`: Reference wavelength (`:center` or nm)
-- `threshold::Float64=3.0`: MAD multiplier for outlier rejection
-- `bin_width::Int=8`: Average every N wavelength columns before detection. For CCD
-  data with many pixels (e.g. 2048), `bin_width=16` or higher is recommended.
-- `min_signal::Float64=0.2`: Minimum signal strength as fraction of global max.
-  Lower this to include weak-signal regions (noisier detection).
-- `onset_frac::Float64=0.5`: (`:threshold` only) Fraction of column max for crossing.
-- `t_range::Union{Tuple,Nothing}=nothing`: (`:threshold` only) Time window for search.
-
-# Example
-```julia
-matrix_bg = subtract_background(matrix)
-cal = detect_chirp(matrix_bg; bin_width=16)
-report(cal)
-
-# Compare methods
-cal_thr = detect_chirp(matrix_bg; method=:threshold, bin_width=16)
-```
+Detect chirp (GVD) in a broadband TA matrix via cross-correlation (`:xcorr`)
+or threshold crossing (`:threshold`). Returns a `ChirpCalibration` with polynomial fit.
 """
 function detect_chirp(matrix::TAMatrix;
     method::Symbol=:xcorr,
     order::Int=3,
     smooth_window::Int=15,
-    reference::Union{Float64,Symbol}=:center,
-    threshold::Float64=3.0,
+    reference::Union{Real,Symbol}=:center,
+    threshold::Real=3.0,
     bin_width::Int=8,
-    onset_frac::Float64=0.5,
-    min_signal::Float64=0.2,
+    onset_frac::Real=0.5,
+    min_signal::Real=0.2,
     t_range::Union{Tuple,Nothing}=nothing)
 
     time = matrix.time
@@ -189,8 +145,21 @@ function detect_chirp(matrix::TAMatrix;
     data = matrix.data
     n_time, n_wl = size(data)
 
-    # Ensure smooth_window is odd
-    smooth_window = isodd(smooth_window) ? smooth_window : smooth_window + 1
+    # Input validation
+    order >= 1 || throw(ArgumentError("order must be >= 1, got $order"))
+    bin_width >= 1 || throw(ArgumentError("bin_width must be >= 1, got $bin_width"))
+    n_wl >= bin_width || throw(ArgumentError("bin_width ($bin_width) must be <= number of wavelengths ($n_wl)"))
+    0 < min_signal <= 1 || throw(ArgumentError("min_signal must be in (0, 1], got $min_signal"))
+    threshold > 0 || throw(ArgumentError("threshold must be positive, got $threshold"))
+    if method === :threshold
+        0 < onset_frac < 1 || throw(ArgumentError("onset_frac must be in (0, 1), got $onset_frac"))
+    end
+
+    # Ensure smooth_window is odd (required for SG filter)
+    if !isodd(smooth_window)
+        smooth_window += 1
+        @info "Rounding smooth_window to $smooth_window (must be odd)"
+    end
 
     # Detect chirp points using selected method
     if method === :xcorr
@@ -203,7 +172,7 @@ function detect_chirp(matrix::TAMatrix;
         binned_wl, binned_chirp_times = _detect_chirp_threshold(
             time, wavelength, data, smooth_window, bin_width, t_range, onset_frac, min_signal)
     else
-        error("Unknown chirp detection method: $method. Use :xcorr or :threshold.")
+        throw(ArgumentError("Unknown chirp detection method: :$method. Use :xcorr or :threshold."))
     end
 
     # Determine reference wavelength
@@ -217,7 +186,7 @@ function detect_chirp(matrix::TAMatrix;
         :method => method,
         :order => order,
         :smooth_window => smooth_window,
-        :threshold => threshold,
+        :mad_threshold => threshold,
         :bin_width => bin_width,
         :min_signal => min_signal,
         :n_points_raw => length(binned_wl),
@@ -231,55 +200,6 @@ function detect_chirp(matrix::TAMatrix;
     end
 
     return ChirpCalibration(clean_wl, clean_times, coeffs, order, ref_λ, r2, metadata)
-end
-
-"""
-Auto-detect the time window containing the chirp feature.
-
-Strategy: the chirp is always at the signal onset — it's the earliest rapid
-change in the data. We find where the wavelength-averaged absolute signal first
-exceeds a threshold, then create a window around that region wide enough to
-capture the full chirp spread across all wavelengths.
-"""
-function _auto_chirp_range(time, data)
-    # Average absolute signal across all wavelengths
-    avg_signal = vec(mean(abs.(data), dims=2))
-
-    # Smooth to reduce noise
-    n = length(avg_signal)
-    win = min(11, n)
-    win = isodd(win) ? win : win - 1
-    if win >= 5
-        avg_smooth = _sg_filter(avg_signal, win, 2).y
-    else
-        avg_smooth = avg_signal
-    end
-
-    # Find onset: first time the smoothed signal exceeds 10% of its maximum
-    max_val = maximum(avg_smooth)
-    onset_threshold = 0.1 * max_val
-    onset_idx = findfirst(x -> x > onset_threshold, avg_smooth)
-    if isnothing(onset_idx)
-        onset_idx = 1
-    end
-
-    # Also find peak gradient as a secondary anchor
-    grad = diff(avg_smooth)
-    peak_grad_idx = argmax(abs.(grad))
-
-    # The chirp window: from well before onset to just past the peak gradient.
-    # Use generous margin to capture chirp at all wavelengths.
-    dt = time[end] - time[1]
-    margin = 0.15 * dt  # 15% of total time range
-
-    t_start = time[max(1, onset_idx)] - margin
-    t_end = time[min(n, peak_grad_idx + 1)] + margin * 0.5
-
-    # Clamp to data range
-    t_start = max(t_start, time[1])
-    t_end = min(t_end, time[end])
-
-    return (t_start, t_end)
 end
 
 """
@@ -489,6 +409,9 @@ Fit polynomial to chirp points with MAD-based outlier rejection.
 Returns (clean_wl, clean_times, coefficients, r_squared).
 """
 function _fit_chirp_polynomial(wl, times, order, threshold, ref_λ)
+    length(wl) > order || throw(ArgumentError(
+        "Need more than $order points to fit order-$order polynomial, got $(length(wl))"))
+
     # First pass: fit polynomial
     coeffs = _polyfit(wl, times, order)
     residuals = times .- _polyeval(coeffs, wl)
@@ -507,11 +430,14 @@ function _fit_chirp_polynomial(wl, times, order, threshold, ref_λ)
     clean_wl = wl[keep]
     clean_times = times[keep]
 
+    length(clean_wl) > order || throw(ArgumentError(
+        "Only $(length(clean_wl)) points survived outlier rejection; need more than $order for order-$order polynomial"))
+
     # Second pass: refit on clean data
     coeffs = _polyfit(clean_wl, clean_times, order)
 
     # Shift so polynomial is zero at reference wavelength
-    ref_shift = _polyeval(coeffs, [ref_λ])[1]
+    ref_shift = _polyeval(coeffs, ref_λ)
     coeffs[1] -= ref_shift
     clean_times = clean_times .- ref_shift
 
@@ -540,11 +466,20 @@ function _polyfit(x, y, order)
 end
 
 """
-Evaluate polynomial with ascending-order coefficients at points x.
+Evaluate polynomial with ascending-order coefficients at a scalar using Horner's method.
 """
-function _polyeval(coeffs, x)
-    return [sum(coeffs[i] * xj^(i-1) for i in eachindex(coeffs)) for xj in x]
+function _polyeval(coeffs, x::Real)
+    result = coeffs[end]
+    for i in (length(coeffs) - 1):-1:1
+        result = muladd(result, x, coeffs[i])
+    end
+    return result
 end
+
+"""
+Evaluate polynomial with ascending-order coefficients at each element of a vector.
+"""
+_polyeval(coeffs, x::AbstractVector) = [_polyeval(coeffs, xj) for xj in x]
 
 # =============================================================================
 # Chirp correction
@@ -553,24 +488,8 @@ end
 """
     correct_chirp(matrix::TAMatrix, cal::ChirpCalibration) -> TAMatrix
 
-Apply chirp correction by shifting each wavelength column in time.
-
-Uses cubic spline interpolation for sub-pixel accuracy. Each wavelength column
-is evaluated at `t + t_shift(λ)` where `t_shift` comes from the calibration
-polynomial, aligning all wavelengths to the reference time zero.
-
-# Arguments
-- `matrix`: Input TAMatrix
-- `cal`: ChirpCalibration from `detect_chirp` or `load_chirp`
-
-# Returns
-New `TAMatrix` with chirp-corrected data.
-
-# Example
-```julia
-cal = detect_chirp(matrix_bg)
-matrix_corrected = correct_chirp(matrix_bg, cal)
-```
+Apply chirp correction via cubic spline interpolation, shifting each wavelength
+column by `t_shift(λ)` from the calibration polynomial.
 """
 function correct_chirp(matrix::TAMatrix, cal::ChirpCalibration)
     time = matrix.time
@@ -581,23 +500,20 @@ function correct_chirp(matrix::TAMatrix, cal::ChirpCalibration)
     poly = polynomial(cal)
     corrected = similar(data)
 
-    for j in eachindex(wavelength)
-        λ = wavelength[j]
-        t_shift = poly(λ)
+    t_grid = range(time[1], time[end], length=n_time)
 
-        # Shifted time points: evaluate original signal at t + t_shift
-        # so that chirp-delayed features align to the reference
-        t_new = time .+ t_shift
+    for j in eachindex(wavelength)
+        t_shift = poly(wavelength[j])
 
         # Cubic spline interpolation of this column
-        col = data[:, j]
+        col = @view data[:, j]
         itp = interpolate(col, BSpline(Cubic(Line(OnGrid()))))
-        sitp = scale(itp, range(time[1], time[end], length=n_time))
+        sitp = scale(itp, t_grid)
         eitp = extrapolate(sitp, Flat())
 
-        # Evaluate at shifted time points
+        # Evaluate at shifted time points (t + t_shift) inline, no allocation
         for i in eachindex(time)
-            corrected[i, j] = eitp(t_new[i])
+            corrected[i, j] = eitp(time[i] + t_shift)
         end
     end
 
@@ -615,13 +531,7 @@ end
 """
     save_chirp(path::String, cal::ChirpCalibration)
 
-Save a chirp calibration to a JSON file for reproducibility and reuse.
-
-# Example
-```julia
-cal = detect_chirp(matrix)
-save_chirp("chirp_calibration.json", cal)
-```
+Save a chirp calibration to a JSON file.
 """
 function save_chirp(path::String, cal::ChirpCalibration)
     d = Dict(
@@ -642,15 +552,15 @@ end
     load_chirp(path::String) -> ChirpCalibration
 
 Load a chirp calibration from a JSON file.
-
-# Example
-```julia
-cal = load_chirp("chirp_calibration.json")
-matrix_corrected = correct_chirp(matrix, cal)
-```
 """
 function load_chirp(path::String)
     d = JSON.parsefile(path)
+
+    required = ("wavelength", "time_offset", "poly_coeffs", "poly_order", "reference_lambda", "r_squared", "metadata")
+    for key in required
+        haskey(d, key) || throw(ArgumentError("Malformed chirp JSON: missing required key \"$key\""))
+    end
+
     metadata = Dict{Symbol,Any}(Symbol(k) => v for (k, v) in d["metadata"])
     return ChirpCalibration(
         Float64.(d["wavelength"]),

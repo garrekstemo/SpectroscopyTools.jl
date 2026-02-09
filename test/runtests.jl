@@ -2,6 +2,7 @@ using Test
 using SpectroscopyTools
 using Unitful
 using Statistics
+using JSON
 
 @testset "SpectroscopyTools.jl" begin
 
@@ -966,6 +967,194 @@ using Statistics
 
             corrected = subtract_background(matrix)
             @test all(corrected.data .== 0.0)
+        end
+
+        @testset "detect_chirp :threshold method" begin
+            n_time = 200
+            n_wl = 80
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            chirp_fn(λ) = 0.005 * (λ - ref_λ)
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                t_onset = chirp_fn(wavelength[j])
+                for i in eachindex(time)
+                    if time[i] > t_onset
+                        data[i, j] = 0.5 * exp(-(time[i] - t_onset) / 3.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+
+            cal = detect_chirp(matrix; method=:threshold, order=1,
+                               reference=ref_λ, smooth_window=7, bin_width=4)
+            @test cal isa ChirpCalibration
+            @test cal.r_squared > 0.8
+            @test length(cal.wavelength) > 0
+        end
+
+        @testset "detect_chirp input validation" begin
+            n_time = 50
+            n_wl = 20
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+            data = rand(n_time, n_wl)
+            matrix = TAMatrix(time, wavelength, data)
+
+            @test_throws ArgumentError detect_chirp(matrix; order=0)
+            @test_throws ArgumentError detect_chirp(matrix; bin_width=0)
+            @test_throws ArgumentError detect_chirp(matrix; bin_width=n_wl + 1)
+            @test_throws ArgumentError detect_chirp(matrix; min_signal=0.0)
+            @test_throws ArgumentError detect_chirp(matrix; min_signal=1.5)
+            @test_throws ArgumentError detect_chirp(matrix; threshold=-1.0)
+            @test_throws ArgumentError detect_chirp(matrix; method=:invalid)
+            @test_throws ArgumentError detect_chirp(matrix; method=:threshold, onset_frac=0.0)
+            @test_throws ArgumentError detect_chirp(matrix; method=:threshold, onset_frac=1.0)
+        end
+
+        @testset "detect_chirp even smooth_window accepted" begin
+            n_time = 200
+            n_wl = 40
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                for i in eachindex(time)
+                    if time[i] > 0
+                        data[i, j] = 0.5 * exp(-time[i] / 3.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+            cal = detect_chirp(matrix; smooth_window=10, order=1, bin_width=4)
+            @test cal isa ChirpCalibration
+            @test cal.metadata[:smooth_window] == 11
+        end
+
+        @testset "detect_chirp recovers known linear chirp" begin
+            n_time = 200
+            n_wl = 80
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            slope = 0.01
+            chirp_fn(λ) = slope * (λ - ref_λ)
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                t_onset = chirp_fn(wavelength[j])
+                for i in eachindex(time)
+                    if time[i] > t_onset
+                        data[i, j] = 0.5 * exp(-(time[i] - t_onset) / 3.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+            cal = detect_chirp(matrix; order=1, reference=ref_λ, smooth_window=7, bin_width=4)
+
+            poly = polynomial(cal)
+            @test abs(poly(ref_λ)) < 0.5
+            @test abs(poly(ref_λ + 50) - slope * 50) < 1.0
+            @test abs(poly(ref_λ - 50) + slope * 50) < 1.0
+        end
+
+        @testset "correct_chirp tighter tolerance" begin
+            n_time = 200
+            n_wl = 50
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            slope = 0.02
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                t_onset = slope * (wavelength[j] - ref_λ)
+                for i in eachindex(time)
+                    if time[i] > t_onset
+                        data[i, j] = exp(-(time[i] - t_onset) / 2.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+
+            # Exact calibration — no detection noise
+            cal = ChirpCalibration(
+                collect(wavelength),
+                [slope * (λ - ref_λ) for λ in wavelength],
+                [-slope * ref_λ, slope],
+                1, ref_λ, 1.0, Dict{Symbol,Any}()
+            )
+
+            corrected = correct_chirp(matrix, cal)
+            inner = n_wl ÷ 4 : 3 * n_wl ÷ 4
+            peak_times = [time[argmax(corrected.data[:, j])] for j in inner]
+            @test std(peak_times) < 0.3
+        end
+
+        @testset "ChirpCalibration show methods" begin
+            cal = ChirpCalibration(
+                [500.0, 600.0, 700.0], [-1.0, 0.0, 1.5],
+                [0.1, -0.002, 0.00001], 2, 600.0, 0.998,
+                Dict{Symbol,Any}(:order => 2)
+            )
+
+            # Compact show
+            io = IOBuffer()
+            show(io, cal)
+            compact = String(take!(io))
+            @test occursin("ChirpCalibration", compact)
+            @test occursin("order 2", compact)
+            @test occursin("3 points", compact)
+
+            # MIME show
+            io = IOBuffer()
+            show(io, MIME("text/plain"), cal)
+            full = String(take!(io))
+            @test occursin("Polynomial order", full)
+            @test occursin("R²", full)
+            @test occursin("Coefficients", full)
+        end
+
+        @testset "load_chirp with malformed JSON" begin
+            tmpfile = tempname() * ".json"
+
+            # Missing required keys
+            open(tmpfile, "w") do io
+                JSON.print(io, Dict("wavelength" => [1.0], "poly_coeffs" => [0.1]))
+            end
+            @test_throws ArgumentError load_chirp(tmpfile)
+            rm(tmpfile)
+        end
+
+        @testset "metadata key rename :mad_threshold" begin
+            n_time = 200
+            n_wl = 80
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                for i in eachindex(time)
+                    if time[i] > 0
+                        data[i, j] = 0.5 * exp(-time[i] / 3.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+            cal = detect_chirp(matrix; order=1, bin_width=4)
+
+            @test haskey(cal.metadata, :mad_threshold)
+            @test !haskey(cal.metadata, :threshold)
         end
 
     end
