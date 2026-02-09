@@ -4,7 +4,6 @@ Peak detection for spectroscopy.
 Wraps Peaks.jl with spectroscopy-specific defaults.
 """
 
-using Peaks: findmaxima, peakproms!, peakwidths!
 
 # =============================================================================
 # Types

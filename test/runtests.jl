@@ -107,29 +107,6 @@ using Statistics
         @test_throws ErrorException matrix[λ=800, t=1.0]
     end
 
-    @testset "AxisType enum" begin
-        @test time_axis isa AxisType
-        @test wavelength_axis isa AxisType
-        @test time_axis != wavelength_axis
-    end
-
-    @testset "PumpProbeData accessors" begin
-        ppd = PumpProbeData(
-            [1.0, 2.0, 3.0],
-            ones(3, 4), ones(3, 4), zeros(3, 4),
-            "20250101_120000", time_axis
-        )
-        @test xaxis(ppd) === ppd.time
-        @test xaxis_label(ppd) == "Time (ps)"
-
-        ppd_wl = PumpProbeData(
-            [800.0, 850.0, 900.0],
-            ones(3, 4), ones(3, 4), zeros(3, 4),
-            "20250101_120000", wavelength_axis
-        )
-        @test xaxis_label(ppd_wl) == "Wavelength (nm)"
-    end
-
     @testset "fit_peaks with raw vectors" begin
         # Synthetic single lorentzian peak
         x = collect(1900.0:0.5:2200.0)
@@ -266,9 +243,9 @@ using Statistics
         signal .+= 0.001 .* randn(length(signal))
 
         trace = TATrace(t, signal)
-        result = fit_exp_decay(trace; irf_width=0.2)
+        result = fit_exp_decay(trace; irf=true, irf_width=0.2)
 
-        @test result isa ExpDecayIRFFit
+        @test result isa ExpDecayFit
         @test result.tau ≈ tau_true atol=1.0
         @test !isnan(result.sigma)
         @test result.rsquared > 0.99
@@ -286,13 +263,13 @@ using Statistics
         trace = TATrace(t, signal)
         result = fit_exp_decay(trace; irf=false)
 
-        @test result isa ExpDecayIRFFit
+        @test result isa ExpDecayFit
         @test result.tau ≈ tau_true atol=1.5
         @test isnan(result.sigma)
         @test result.rsquared > 0.99
     end
 
-    @testset "Biexponential fitting - synthetic" begin
+    @testset "Biexponential fitting via n_exp=2" begin
         t = collect(-2.0:0.1:50.0)
         tau1_true = 2.0
         tau2_true = 20.0
@@ -306,12 +283,12 @@ using Statistics
         signal .+= 0.002 .* randn(length(signal))
 
         trace = TATrace(t, signal)
-        result = fit_biexp_decay(trace; irf_width=0.2)
+        result = fit_exp_decay(trace; n_exp=2, irf=true, irf_width=0.2)
 
-        @test result isa BiexpDecayFit
-        @test result.tau1 > 0
-        @test result.tau2 > 0
-        @test result.tau1 < result.tau2
+        @test result isa MultiexpDecayFit
+        @test length(result.taus) == 2
+        @test all(result.taus .> 0)
+        @test result.taus[1] < result.taus[2]
         @test result.rsquared > 0.95
     end
 
@@ -325,16 +302,16 @@ using Statistics
         trace = TATrace(t, signal)
 
         # n_exp=2
-        result2 = fit_exp_decay(trace; n_exp=2, irf_width=0.2)
+        result2 = fit_exp_decay(trace; n_exp=2, irf=true, irf_width=0.2)
         @test result2 isa MultiexpDecayFit
-        @test n_exp(result2) == 2
+        @test SpectroscopyTools.n_exp(result2) == 2
         @test length(result2.taus) == 2
         @test length(result2.amplitudes) == 2
         @test all(result2.taus .> 0)
         @test result2.taus[1] <= result2.taus[2]
         @test result2.rsquared > 0.95
 
-        w = weights(result2)
+        w = SpectroscopyTools.weights(result2)
         @test length(w) == 2
         @test sum(w) ≈ 1.0 atol=1e-10
 
@@ -372,13 +349,13 @@ using Statistics
         @test length(curves[1]) == length(t)
     end
 
-    @testset "predict - ExpDecayIRFFit" begin
+    @testset "predict - ExpDecayFit" begin
         t = collect(-2.0:0.1:30.0)
         signal = [SpectroscopyTools._exp_decay_irf_conv(ti, 1.0, 5.0, 0.0, 0.3) + 0.01
                   for ti in t]
 
         trace = TATrace(t, signal)
-        result = fit_exp_decay(trace; irf_width=0.2)
+        result = fit_exp_decay(trace; irf=true, irf_width=0.2)
 
         curve = predict(result, trace)
         @test length(curve) == length(t)
@@ -389,14 +366,14 @@ using Statistics
         @test curve2 == curve
     end
 
-    @testset "predict - BiexpDecayFit" begin
+    @testset "predict - MultiexpDecayFit (n_exp=2)" begin
         t = collect(-2.0:0.1:30.0)
         signal = [SpectroscopyTools._exp_decay_irf_conv(ti, 0.5, 2.0, 0.0, 0.3) +
                   SpectroscopyTools._exp_decay_irf_conv(ti, 0.5, 15.0, 0.0, 0.3) + 0.01
                   for ti in t]
 
         trace = TATrace(t, signal)
-        result = fit_biexp_decay(trace; irf_width=0.2)
+        result = fit_exp_decay(trace; n_exp=2, irf=true, irf_width=0.2)
 
         curve = predict(result, trace)
         @test length(curve) == length(t)
@@ -414,13 +391,85 @@ using Statistics
         result = fit_ta_spectrum(spec; region=(1980, 2120))
 
         @test result isa TASpectrumFit
-        @test result.esa_center ≈ 2040.0 atol=5.0
-        @test result.gsb_center ≈ 2060.0 atol=5.0
-        @test result.anharmonicity > 0
+        @test length(result.peaks) == 2
+        @test result[:esa].center ≈ 2040.0 atol=5.0
+        @test result[:gsb].center ≈ 2060.0 atol=5.0
+        @test result[:esa].label == :esa
+        @test result[:gsb].label == :gsb
+        @test anharmonicity(result) > 0
         @test result.rsquared > 0.95
 
         y_fit = predict(result, ν)
         @test length(y_fit) == length(ν)
+
+        # predict_peak decomposes into individual contributions
+        esa_contrib = predict_peak(result, 1, ν)
+        gsb_contrib = predict_peak(result, 2, ν)
+        @test all(esa_contrib .>= 0)  # ESA is positive
+        @test all(gsb_contrib .<= 0)  # GSB is negative
+    end
+
+    @testset "TA spectrum fitting - three peaks" begin
+        ν = collect(1900.0:1.0:2200.0)
+        esa = @. 0.004 * exp(-4 * log(2) * ((ν - 2030.0) / 20.0)^2)
+        gsb = @. 0.008 * exp(-4 * log(2) * ((ν - 2060.0) / 15.0)^2)
+        se = @. 0.003 * exp(-4 * log(2) * ((ν - 2100.0) / 25.0)^2)
+        signal = esa .- gsb .- se
+
+        spec = TASpectrum(ν, signal)
+        result = fit_ta_spectrum(spec; peaks=[:esa, :gsb, :se])
+
+        @test length(result.peaks) == 3
+        @test result[:esa].label == :esa
+        @test result[:gsb].label == :gsb
+        @test result[:se].label == :se
+        @test result.rsquared > 0.9
+    end
+
+    @testset "TA spectrum fitting - per-peak models" begin
+        ν = collect(1950.0:1.0:2150.0)
+        esa = @. 0.005 * exp(-4 * log(2) * ((ν - 2040.0) / 15.0)^2)
+        gsb = @. 0.008 * exp(-4 * log(2) * ((ν - 2060.0) / 18.0)^2)
+        signal = esa .- gsb
+
+        spec = TASpectrum(ν, signal)
+        result = fit_ta_spectrum(spec; peaks=[(:esa, lorentzian), (:gsb, gaussian)],
+                                 region=(1980, 2120))
+
+        @test result[:esa].model == "lorentzian"
+        @test result[:gsb].model == "gaussian"
+        @test result.rsquared > 0.9
+    end
+
+    @testset "TA spectrum fitting - multiple peaks same type" begin
+        # W(CO)6-like: 3 ESA + 3 GSB at well-separated positions
+        ν = collect(1850.0:0.5:2150.0)
+        esa1 = @. 0.003 * exp(-4 * log(2) * ((ν - 1960.0) / 10.0)^2)
+        esa2 = @. 0.005 * exp(-4 * log(2) * ((ν - 1990.0) / 12.0)^2)
+        esa3 = @. 0.002 * exp(-4 * log(2) * ((ν - 2060.0) / 8.0)^2)
+        gsb1 = @. 0.004 * exp(-4 * log(2) * ((ν - 1970.0) / 10.0)^2)
+        gsb2 = @. 0.007 * exp(-4 * log(2) * ((ν - 2000.0) / 12.0)^2)
+        gsb3 = @. 0.003 * exp(-4 * log(2) * ((ν - 2070.0) / 8.0)^2)
+        signal = (esa1 .+ esa2 .+ esa3) .- (gsb1 .+ gsb2 .+ gsb3)
+
+        spec = TASpectrum(ν, signal)
+        result = fit_ta_spectrum(spec; peaks=[:esa, :esa, :esa, :gsb, :gsb, :gsb])
+
+        @test length(result.peaks) == 6
+        @test count(p -> p.label == :esa, result.peaks) == 3
+        @test count(p -> p.label == :gsb, result.peaks) == 3
+        @test result.rsquared > 0.9
+
+        # anharmonicity is NaN with multiple ESA/GSB
+        @test isnan(anharmonicity(result))
+
+        # Individual peak contributions have correct signs
+        for i in 1:3
+            @test all(predict_peak(result, i) .>= -1e-10)  # ESA peaks positive
+        end
+        for i in 4:6
+            @test all(predict_peak(result, i) .<= 1e-10)   # GSB peaks negative
+        end
     end
 
     @testset "Spectroscopy utilities - normalize" begin
@@ -436,9 +485,9 @@ using Statistics
 
     @testset "Spectroscopy utilities - time_index" begin
         times = [0.0, 1.0, 2.0, 5.0, 10.0]
-        @test time_index(times, 2.1) == 3
-        @test time_index(times, 0.0) == 1
-        @test time_index(times, 7.0) == 4
+        @test SpectroscopyTools.time_index(times, 2.1) == 3
+        @test SpectroscopyTools.time_index(times, 0.0) == 1
+        @test SpectroscopyTools.time_index(times, 7.0) == 4
     end
 
     @testset "Spectroscopy utilities - transmittance/absorbance" begin
@@ -480,75 +529,26 @@ using Statistics
         @test result.fwhm ≈ fwhm_expected atol=1.0
     end
 
-    @testset "Unit parsing - concentrations" begin
-        @test parse_concentration("1.0M") == 1.0u"M"
-        @test parse_concentration("500mM") == 500.0u"mM"
-        @test parse_concentration("100μM") == 100.0u"μM"
-        @test parse_concentration("10nM") == 10.0u"nM"
-        @test parse_concentration("1pM") == 1.0u"pM"
+    @testset "Spectroscopy utilities - subtract_spectrum" begin
+        ν = collect(1900.0:1.0:2100.0)
+        y1 = @. 0.5 * exp(-((ν - 2000) / 20)^2)
+        y2 = @. 0.1 * exp(-((ν - 2000) / 30)^2)
 
-        @test parse_concentration("1.5mol/L") == 1.5u"mol/L"
-        @test parse_concentration("0.5 mol/L") == 0.5u"mol/L"
+        # NamedTuple interface (raw vectors)
+        result = subtract_spectrum((x=ν, y=y1), (x=ν, y=y2))
+        @test result.x == ν
+        @test result.y ≈ y1 .- y2
 
-        # Keyboard substitution
-        @test parse_concentration("100uM") == 100.0u"μM"
+        # Typed interface (TASpectrum)
+        spec1 = TASpectrum(ν, y1)
+        spec2 = TASpectrum(ν, y2)
+        result_typed = subtract_spectrum(spec1, spec2)
+        @test result_typed.x == ν
+        @test result_typed.y ≈ y1 .- y2
 
-        # Whitespace
-        @test parse_concentration("  1.0 M ") == 1.0u"M"
-        @test parse_concentration("500 mM") == 500.0u"mM"
-
-        # Scientific notation
-        @test parse_concentration("1e-3M") == 1e-3u"M"
-        @test parse_concentration("2.5e2mM") == 250.0u"mM"
-        @test parse_concentration("1.5e-6M") ≈ 1.5u"μM" rtol=1e-10
-
-        # Conversions
-        c = parse_concentration("500mM")
-        @test Unitful.uconvert(u"M", c) == 0.5u"M"
-
-        @test Unitful.uconvert(u"mol/L", parse_concentration("1.0M")) == 1.0u"mol/L"
-
-        # Errors
-        @test_throws ArgumentError parse_concentration("")
-        @test_throws ArgumentError parse_concentration("abc")
-        @test_throws ArgumentError parse_concentration("1.0")
-        @test_throws ArgumentError parse_concentration("1.0X")
-        @test_throws ArgumentError parse_concentration("1.0kg")
-        @test_throws ArgumentError parse_concentration("1.0s")
-    end
-
-    @testset "Unit parsing - time" begin
-        @test parse_time("500fs") == 500.0u"fs"
-        @test parse_time("2.5ps") == 2.5u"ps"
-        @test parse_time("100ns") == 100.0u"ns"
-        @test parse_time("1μs") == 1.0u"μs"
-        @test parse_time("10ms") == 10.0u"ms"
-        @test parse_time("1s") == 1.0u"s"
-
-        # Keyboard substitution
-        @test parse_time("1us") == 1.0u"μs"
-        @test parse_time("100 us") == 100.0u"μs"
-
-        # Whitespace
-        @test parse_time("  500 fs ") == 500.0u"fs"
-        @test parse_time("2.5 ps") == 2.5u"ps"
-
-        # Scientific notation
-        @test parse_time("1e3fs") == 1000.0u"fs"
-        @test parse_time("1.5e-12s") ≈ 1.5u"ps" rtol=1e-10
-
-        # Conversions
-        t = parse_time("500fs")
-        @test Unitful.uconvert(u"ps", t) ≈ 0.5u"ps"
-
-        @test Unitful.uconvert(u"fs", parse_time("1ps")) == 1000.0u"fs"
-        @test Unitful.uconvert(u"ns", parse_time("1000ps")) == 1.0u"ns"
-
-        # Errors
-        @test_throws ArgumentError parse_time("")
-        @test_throws ArgumentError parse_time("100")
-        @test_throws ArgumentError parse_time("1.0M")
-        @test_throws ArgumentError parse_time("1.0nm")
+        # scale parameter
+        result_scaled = subtract_spectrum(spec1, spec2; scale=0.5)
+        @test result_scaled.y ≈ y1 .- 0.5 .* y2
     end
 
     @testset "Spectroscopy conversions - wavenumber/wavelength" begin
@@ -680,7 +680,7 @@ using Statistics
             [0.452, 2062.3, 24.7, 0.01], lorentzian, 3,
             collect(2000.0:1.0:2099.0), zeros(100)
         )
-        md = format_results(result)
+        md = SpectroscopyTools.format_results(result)
         @test occursin("Peak Fit Results", md)
         @test occursin("2062.3", md)
         @test occursin("24.7", md)
@@ -691,9 +691,9 @@ using Statistics
         @test occursin("2100", md)
     end
 
-    @testset "format_results - ExpDecayIRFFit" begin
-        result = ExpDecayIRFFit(0.5, 8.3, 0.1, 0.25, 0.01, :esa, zeros(10), 0.9923)
-        md = format_results(result)
+    @testset "format_results - ExpDecayFit" begin
+        result = ExpDecayFit(0.5, 8.3, 0.1, 0.25, 0.01, :esa, zeros(10), 0.9923)
+        md = SpectroscopyTools.format_results(result)
         @test occursin("Exponential Decay Fit", md)
         @test occursin("ESA", md)
         @test occursin("8.3", md)
@@ -701,33 +701,12 @@ using Statistics
         @test occursin("0.9923", md)
     end
 
-    @testset "format_results - ExpDecayFit" begin
-        result = ExpDecayFit(0.5, 8.3, 0.01, 5, :gsb, zeros(10), 0.9901)
-        md = format_results(result)
-        @test occursin("Exponential Decay Fit", md)
-        @test occursin("GSB", md)
-        @test occursin("8.3", md)
-        @test occursin("0.9901", md)
-    end
-
-    @testset "format_results - BiexpDecayFit" begin
-        result = BiexpDecayFit(1.5, 15.0, 0.3, 0.2, 0.1, 0.25, 0.01, :esa, zeros(10), 0.9967)
-        md = format_results(result)
-        @test occursin("Biexponential Decay Fit", md)
-        @test occursin("ESA", md)
-        @test occursin("1.5", md)
-        @test occursin("15.0", md)
-        @test occursin("Fast", md)
-        @test occursin("Slow", md)
-        @test occursin("0.9967", md)
-    end
-
     @testset "format_results - MultiexpDecayFit" begin
         result = MultiexpDecayFit(
             [0.5, 5.0, 50.0], [0.3, 0.4, 0.1],
             0.1, 0.25, 0.01, :esa, zeros(10), 0.9991
         )
-        md = format_results(result)
+        md = SpectroscopyTools.format_results(result)
         @test occursin("Multi-exponential Decay Fit", md)
         @test occursin("3 components", md)
         @test occursin("0.5", md)
@@ -745,7 +724,7 @@ using Statistics
             [0.9950, 0.9940],
             [zeros(10), zeros(10)]
         )
-        md = format_results(result)
+        md = SpectroscopyTools.format_results(result)
         @test occursin("Global Fit Results", md)
         @test occursin("2 traces", md)
         @test occursin("8.5", md)
@@ -758,10 +737,10 @@ using Statistics
 
     @testset "irf_fwhm and pulse_fwhm" begin
         sigma = 0.3
-        fwhm = irf_fwhm(sigma)
+        fwhm = SpectroscopyTools.irf_fwhm(sigma)
         @test fwhm ≈ 2 * sqrt(2 * log(2)) * sigma rtol=1e-10
 
-        pfwhm = pulse_fwhm(sigma)
+        pfwhm = SpectroscopyTools.pulse_fwhm(sigma)
         @test pfwhm ≈ fwhm / sqrt(2) rtol=1e-10
     end
 
@@ -806,6 +785,189 @@ using Statistics
         @test isdefined(SpectroscopyTools, :lorentzian)
         @test isdefined(SpectroscopyTools, :single_exponential)
         @test isdefined(SpectroscopyTools, :pseudo_voigt)
+    end
+
+    @testset "Chirp correction" begin
+
+        @testset "subtract_background" begin
+            n_time = 50
+            n_wl = 20
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+            background = repeat([0.01 * j for j in 1:n_wl]', n_time)
+
+            signal = zeros(n_time, n_wl)
+            for i in eachindex(time)
+                if time[i] > 0
+                    for j in eachindex(wavelength)
+                        signal[i, j] = 0.1 * exp(-time[i] / 3.0) * sin(j * 0.5)
+                    end
+                end
+            end
+
+            data = signal .+ background
+            metadata = Dict{Symbol,Any}(:source => "test")
+            matrix = TAMatrix(time, wavelength, data, metadata)
+
+            corrected = subtract_background(matrix)
+            @test corrected isa TAMatrix
+            @test size(corrected.data) == size(matrix.data)
+            @test corrected.metadata[:background_subtracted] == true
+            @test haskey(corrected.metadata, :baseline_t_range)
+
+            pre_pump_mask = corrected.time .< -1.0
+            pre_pump_data = corrected.data[pre_pump_mask, :]
+            @test maximum(abs.(pre_pump_data)) < 0.01
+
+            @test matrix.data !== corrected.data
+
+            corrected2 = subtract_background(matrix; t_range=(-5.0, -2.0))
+            @test corrected2.metadata[:baseline_t_range] == (-5.0, -2.0)
+        end
+
+        @testset "detect_chirp on synthetic data" begin
+            n_time = 200
+            n_wl = 100
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            chirp_fn(λ) = 0.0001 * (λ - ref_λ)^2 - 0.002 * (λ - ref_λ)
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                λ = wavelength[j]
+                t_onset = chirp_fn(λ)
+                for i in eachindex(time)
+                    t = time[i]
+                    if t > t_onset
+                        data[i, j] = 0.5 * exp(-(t - t_onset) / 3.0)
+                    end
+                end
+            end
+
+            metadata = Dict{Symbol,Any}(:source => "synthetic")
+            matrix = TAMatrix(time, wavelength, data, metadata)
+
+            cal = detect_chirp(matrix; order=2, reference=ref_λ, smooth_window=7, bin_width=4)
+            @test cal isa ChirpCalibration
+            @test cal.poly_order == 2
+            @test cal.reference_λ == ref_λ
+            @test cal.r_squared > 0.9
+            @test length(cal.wavelength) > 0
+            @test length(cal.time_offset) == length(cal.wavelength)
+
+            poly = polynomial(cal)
+            @test abs(poly(ref_λ)) < 0.5
+
+            @test report(cal) === nothing
+        end
+
+        @testset "correct_chirp" begin
+            n_time = 100
+            n_wl = 50
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                t_onset = 0.02 * (wavelength[j] - ref_λ)
+                for i in eachindex(time)
+                    if time[i] > t_onset
+                        data[i, j] = exp(-(time[i] - t_onset) / 2.0)
+                    end
+                end
+            end
+
+            metadata = Dict{Symbol,Any}(:source => "synthetic")
+            matrix = TAMatrix(time, wavelength, data, metadata)
+
+            cal = ChirpCalibration(
+                collect(wavelength),
+                [0.02 * (λ - ref_λ) for λ in wavelength],
+                [-0.02 * ref_λ, 0.02],
+                1,
+                ref_λ,
+                1.0,
+                Dict{Symbol,Any}()
+            )
+
+            corrected = correct_chirp(matrix, cal)
+            @test corrected isa TAMatrix
+            @test size(corrected.data) == size(matrix.data)
+            @test corrected.metadata[:chirp_corrected] == true
+
+            inner = n_wl ÷ 4 : 3 * n_wl ÷ 4
+            peak_times = [time[argmax(corrected.data[:, j])] for j in inner]
+            @test std(peak_times) < 1.0
+        end
+
+        @testset "save_chirp and load_chirp round-trip" begin
+            cal = ChirpCalibration(
+                [500.0, 600.0, 700.0],
+                [-1.0, 0.0, 1.5],
+                [0.1, -0.002, 0.00001],
+                2,
+                600.0,
+                0.998,
+                Dict{Symbol,Any}(:order => 2, :smooth_window => 15)
+            )
+
+            tmpfile = tempname() * ".json"
+            save_chirp(tmpfile, cal)
+            @test isfile(tmpfile)
+
+            cal2 = load_chirp(tmpfile)
+            @test cal2 isa ChirpCalibration
+            @test cal2.wavelength ≈ cal.wavelength
+            @test cal2.time_offset ≈ cal.time_offset
+            @test cal2.poly_coeffs ≈ cal.poly_coeffs
+            @test cal2.poly_order == cal.poly_order
+            @test cal2.reference_λ ≈ cal.reference_λ
+            @test cal2.r_squared ≈ cal.r_squared
+            @test cal2.metadata[:order] == 2
+
+            rm(tmpfile)
+        end
+
+        @testset "ChirpCalibration polynomial" begin
+            cal = ChirpCalibration(
+                Float64[], Float64[],
+                [1.0, 0.5, 0.01],
+                2, 0.0, 1.0,
+                Dict{Symbol,Any}()
+            )
+
+            poly = polynomial(cal)
+            @test poly(0.0) ≈ 1.0
+            @test poly(1.0) ≈ 1.51
+            @test poly(10.0) ≈ 1.0 + 5.0 + 1.0
+        end
+
+        @testset "Chirp exports available" begin
+            @test isdefined(SpectroscopyTools, :ChirpCalibration)
+            @test isdefined(SpectroscopyTools, :detect_chirp)
+            @test isdefined(SpectroscopyTools, :correct_chirp)
+            @test isdefined(SpectroscopyTools, :subtract_background)
+            @test isdefined(SpectroscopyTools, :save_chirp)
+            @test isdefined(SpectroscopyTools, :load_chirp)
+            @test isdefined(SpectroscopyTools, :polynomial)
+        end
+
+        @testset "subtract_background with flat matrix" begin
+            n_time = 20
+            n_wl = 10
+            time = collect(range(-2.0, 5.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+            data = zeros(n_time, n_wl)
+            metadata = Dict{Symbol,Any}(:source => "flat")
+            matrix = TAMatrix(time, wavelength, data, metadata)
+
+            corrected = subtract_background(matrix)
+            @test all(corrected.data .== 0.0)
+        end
+
     end
 
 end

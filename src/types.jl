@@ -74,59 +74,6 @@ Return a display title for the data. Defaults to `source_file(d)`.
 title(d::AbstractSpectroscopyData) = source_file(d)
 
 # =============================================================================
-# Pump-probe types
-# =============================================================================
-
-"""
-    AxisType
-
-Enum indicating what the x-axis of pump-probe data represents.
-
-- `time_axis` — Kinetics measurement, x = time in picoseconds
-- `wavelength_axis` — Spectral measurement, x = wavelength in nanometers
-"""
-@enum AxisType begin
-    time_axis        # Kinetics: x = time (ps)
-    wavelength_axis  # Spectrum: x = wavelength (nm)
-end
-
-"""
-    PumpProbeData
-
-Raw pump-probe measurement data.
-
-# Fields
-- `time::Vector{Float64}`: X-axis data (time in ps OR wavelength in nm, see `axis_type`)
-- `on::Matrix{Float64}`: Pump-on signal (rows = x points, cols = channels 0-3)
-- `off::Matrix{Float64}`: Pump-off signal
-- `diff::Matrix{Float64}`: Lock-in difference (ON - OFF, computed by instrument)
-- `timestamp::String`: Acquisition timestamp
-- `axis_type::AxisType`: What the x-axis represents (time or wavelength)
-"""
-struct PumpProbeData
-    time::Vector{Float64}
-    on::Matrix{Float64}
-    off::Matrix{Float64}
-    diff::Matrix{Float64}
-    timestamp::String
-    axis_type::AxisType
-end
-
-"""
-    xaxis(data::PumpProbeData) -> Vector{Float64}
-
-Return the x-axis data (time or wavelength depending on measurement type).
-"""
-xaxis(d::PumpProbeData) = d.time
-
-"""
-    xaxis_label(data::PumpProbeData) -> String
-
-Return the appropriate x-axis label based on measurement type.
-"""
-xaxis_label(d::PumpProbeData) = d.axis_type == time_axis ? "Time (ps)" : "Wavelength (nm)"
-
-# =============================================================================
 # Transient Absorption types (unified API)
 # =============================================================================
 
@@ -236,42 +183,125 @@ function Base.show(io::IO, ::MIME"text/plain", s::TASpectrum)
 end
 
 """
-    TASpectrumFit
+    TAPeak
 
-Result of pump-probe spectrum fitting (ESA + GSB peaks).
+Information about a single peak in a TA spectrum fit.
 
 # Fields
-- `esa_center`, `esa_fwhm`, `esa_amplitude`: ESA peak parameters
-- `gsb_center`, `gsb_fwhm`, `gsb_amplitude`: GSB peak parameters
-- `offset`, `anharmonicity`, `rsquared`, `residuals`: Fit metadata
+- `label::Symbol` — Peak type (`:esa`, `:gsb`, `:se`, `:positive`, `:negative`)
+- `model::String` — Lineshape model name (`"gaussian"`, `"lorentzian"`, `"pseudo_voigt"`)
+- `center::Float64` — Peak center position
+- `width::Float64` — Width parameter (sigma for gaussian/voigt, fwhm for lorentzian)
+- `amplitude::Float64` — Peak amplitude (always positive; sign determined by label)
+"""
+struct TAPeak
+    label::Symbol
+    model::String
+    center::Float64
+    width::Float64
+    amplitude::Float64
+end
+
+function Base.show(io::IO, pk::TAPeak)
+    print(io, "TAPeak(:$(pk.label), $(round(pk.center, digits=1)), $(pk.model))")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", pk::TAPeak)
+    label = uppercase(string(pk.label))
+    println(io, "TAPeak ($label)")
+    println(io, "  Model:     $(pk.model)")
+    println(io, "  Center:    $(round(pk.center, digits=2))")
+    println(io, "  Width:     $(round(pk.width, digits=2))")
+    print(io, "  Amplitude: $(round(pk.amplitude, sigdigits=4))")
+end
+
+"""
+    TASpectrumFit
+
+Result of TA spectrum fitting with N peaks of arbitrary lineshape.
+
+Supports any combination of ESA, GSB, and SE peaks, each with its own
+lineshape model (Gaussian, Lorentzian, pseudo-Voigt).
+
+# Access peaks
+- `result.peaks` — Vector of `TAPeak`
+- `result[i]` — i-th peak
+- `result[:esa]` — first peak with label `:esa`
+- `anharmonicity(result)` — GSB center minus ESA center (NaN if not applicable)
+
+# Fields
+- `peaks::Vector{TAPeak}` — Fitted peak parameters
+- `offset`, `rsquared`, `residuals` — Fit metadata
 """
 struct TASpectrumFit
-    esa_center::Float64
-    esa_fwhm::Float64
-    esa_amplitude::Float64
-    gsb_center::Float64
-    gsb_fwhm::Float64
-    gsb_amplitude::Float64
+    peaks::Vector{TAPeak}
     offset::Float64
-    anharmonicity::Float64
     rsquared::Float64
     residuals::Vector{Float64}
+    _coef::Vector{Float64}
+    _peak_fns::Vector{Function}
+    _peak_signs::Vector{Int}
+    _peak_npp::Vector{Int}
+    _fit_offset::Bool
+    _x::Vector{Float64}
+end
+
+Base.getindex(r::TASpectrumFit, i::Int) = r.peaks[i]
+Base.length(r::TASpectrumFit) = length(r.peaks)
+
+function Base.getindex(r::TASpectrumFit, label::Symbol)
+    idx = findfirst(p -> p.label == label, r.peaks)
+    isnothing(idx) && error("No peak with label :$label. Available: $(unique([p.label for p in r.peaks]))")
+    return r.peaks[idx]
+end
+
+"""
+    anharmonicity(fit::TASpectrumFit) -> Float64
+
+Compute the anharmonicity (GSB center - ESA center) from a TA spectrum fit.
+Returns `NaN` if there is not exactly one ESA and one GSB peak.
+"""
+function anharmonicity(fit::TASpectrumFit)
+    esa = filter(p -> p.label == :esa, fit.peaks)
+    gsb = filter(p -> p.label == :gsb, fit.peaks)
+    if length(esa) == 1 && length(gsb) == 1
+        return gsb[1].center - esa[1].center
+    else
+        return NaN
+    end
 end
 
 function Base.show(io::IO, fit::TASpectrumFit)
-    print(io, "TASpectrumFit: ESA $(round(Int, fit.esa_center)) cm⁻¹, GSB $(round(Int, fit.gsb_center)) cm⁻¹, Δν = $(round(fit.anharmonicity, digits=1)) cm⁻¹")
+    labels = join([uppercase(string(p.label)) for p in fit.peaks], "+")
+    print(io, "TASpectrumFit: $labels, R² = $(round(fit.rsquared, digits=4))")
 end
 
 function Base.show(io::IO, ::MIME"text/plain", fit::TASpectrumFit)
-    println(io, "TASpectrumFit")
+    n = length(fit.peaks)
+
+    println(io, "TASpectrumFit ($n peak$(n == 1 ? "" : "s"))")
     println(io)
-    println(io, "  Peak        Center (cm⁻¹)    FWHM (cm⁻¹)    Amplitude")
-    println(io, "  ─────────────────────────────────────────────────────────")
-    println(io, "  ESA         $(lpad(round(fit.esa_center, digits=1), 10))    $(lpad(round(fit.esa_fwhm, digits=1), 10))    $(lpad(round(fit.esa_amplitude, sigdigits=3), 10))")
-    println(io, "  GSB         $(lpad(round(fit.gsb_center, digits=1), 10))    $(lpad(round(fit.gsb_fwhm, digits=1), 10))    $(lpad(round(fit.gsb_amplitude, sigdigits=3), 10))")
-    println(io)
-    println(io, "  Anharmonicity: $(round(fit.anharmonicity, digits=1)) cm⁻¹")
-    println(io, "  Offset:        $(round(fit.offset, sigdigits=3))")
+    println(io, "  Peak   Type   Model          Center        Width      Amplitude")
+    println(io, "  ─────────────────────────────────────────────────────────────────")
+    for (i, pk) in enumerate(fit.peaks)
+        label = rpad(uppercase(string(pk.label)), 6)
+        model = rpad(pk.model, 14)
+        center = lpad(round(pk.center, digits=1), 10)
+        width = lpad(round(pk.width, digits=2), 10)
+        amp = lpad(round(pk.amplitude, sigdigits=3), 10)
+        println(io, "  $(lpad(i, 4))   $label $model $center $width $amp")
+    end
+
+    anharm = anharmonicity(fit)
+    if !isnan(anharm)
+        println(io)
+        println(io, "  Anharmonicity: $(round(anharm, digits=1))")
+    end
+
+    if fit.offset != 0.0
+        println(io, "  Offset:        $(round(fit.offset, sigdigits=3))")
+    end
+
     println(io)
     print(io, "  R² = $(round(fit.rsquared, digits=5))")
 end
@@ -283,50 +313,12 @@ end
 """
     ExpDecayFit
 
-Result of exponential decay fitting (no IRF).
-
-# Fields
-- `amplitude`, `tau`, `offset`, `t0`, `signal_type`, `residuals`, `rsquared`
-"""
-struct ExpDecayFit
-    amplitude::Float64
-    tau::Float64
-    offset::Float64
-    t0::Int
-    signal_type::Symbol
-    residuals::Vector{Float64}
-    rsquared::Float64
-end
-
-function Base.show(io::IO, fit::ExpDecayFit)
-    signal_str = fit.signal_type == :esa ? "ESA" : "GSB"
-    print(io, "ExpDecayFit: τ = $(round(fit.tau, digits=2)), R² = $(round(fit.rsquared, digits=4)) ($signal_str)")
-end
-
-function Base.show(io::IO, ::MIME"text/plain", fit::ExpDecayFit)
-    signal_str = fit.signal_type == :esa ? "ESA (positive)" : "GSB (negative)"
-
-    println(io, "ExpDecayFit ($signal_str)")
-    println(io)
-    println(io, "  Parameter       Value")
-    println(io, "  ─────────────────────────────")
-    println(io, "  τ          $(lpad(round(fit.tau, digits=3), 10))")
-    println(io, "  Amplitude  $(lpad(round(fit.amplitude, sigdigits=4), 10))")
-    println(io, "  Offset     $(lpad(round(fit.offset, sigdigits=4), 10))")
-    println(io, "  t₀ index   $(lpad(fit.t0, 10))")
-    println(io)
-    print(io,   "  R² = $(round(fit.rsquared, digits=5))")
-end
-
-"""
-    ExpDecayIRFFit
-
 Result of exponential decay fitting with instrument response function convolution.
 
 # Fields
 - `amplitude`, `tau`, `t0`, `sigma`, `offset`, `signal_type`, `residuals`, `rsquared`
 """
-struct ExpDecayIRFFit
+struct ExpDecayFit
     amplitude::Float64
     tau::Float64
     t0::Float64
@@ -337,16 +329,16 @@ struct ExpDecayIRFFit
     rsquared::Float64
 end
 
-function Base.show(io::IO, fit::ExpDecayIRFFit)
+function Base.show(io::IO, fit::ExpDecayFit)
     signal_str = fit.signal_type == :esa ? "ESA" : "GSB"
-    print(io, "ExpDecayIRFFit: τ = $(round(fit.tau, digits=2)) ps, R² = $(round(fit.rsquared, digits=4)) ($signal_str)")
+    print(io, "ExpDecayFit: τ = $(round(fit.tau, digits=2)) ps, R² = $(round(fit.rsquared, digits=4)) ($signal_str)")
 end
 
-function Base.show(io::IO, ::MIME"text/plain", fit::ExpDecayIRFFit)
+function Base.show(io::IO, ::MIME"text/plain", fit::ExpDecayFit)
     signal_str = fit.signal_type == :esa ? "ESA (positive)" : "GSB (negative)"
     has_irf = !isnan(fit.sigma)
 
-    println(io, "ExpDecayIRFFit ($signal_str)")
+    println(io, "ExpDecayFit ($signal_str)")
     println(io)
     println(io, "  Parameter       Value")
     println(io, "  ─────────────────────────────")
@@ -361,55 +353,6 @@ function Base.show(io::IO, ::MIME"text/plain", fit::ExpDecayIRFFit)
     print(io, "  R² = $(round(fit.rsquared, digits=5))")
 end
 
-"""
-    BiexpDecayFit
-
-Result of biexponential decay fitting.
-
-Time constants are ordered so τ₁ < τ₂ (fast, slow).
-"""
-struct BiexpDecayFit
-    tau1::Float64
-    tau2::Float64
-    amplitude1::Float64
-    amplitude2::Float64
-    t0::Float64
-    sigma::Float64
-    offset::Float64
-    signal_type::Symbol
-    residuals::Vector{Float64}
-    rsquared::Float64
-end
-
-function Base.show(io::IO, fit::BiexpDecayFit)
-    signal_str = fit.signal_type == :esa ? "ESA" : "GSB"
-    print(io, "BiexpDecayFit: τ₁ = $(round(fit.tau1, digits=2)) ps, τ₂ = $(round(fit.tau2, digits=2)) ps, R² = $(round(fit.rsquared, digits=4)) ($signal_str)")
-end
-
-function Base.show(io::IO, ::MIME"text/plain", fit::BiexpDecayFit)
-    signal_str = fit.signal_type == :esa ? "ESA (positive)" : "GSB (negative)"
-    has_irf = !isnan(fit.sigma)
-
-    total_amp = abs(fit.amplitude1) + abs(fit.amplitude2)
-    frac1 = total_amp > 0 ? round(100 * abs(fit.amplitude1) / total_amp, digits=1) : 0.0
-    frac2 = total_amp > 0 ? round(100 * abs(fit.amplitude2) / total_amp, digits=1) : 0.0
-
-    println(io, "BiexpDecayFit ($signal_str)")
-    println(io)
-    println(io, "  Parameter       Value        Weight")
-    println(io, "  ──────────────────────────────────────")
-    println(io, "  τ₁         $(lpad(round(fit.tau1, digits=3), 10)) ps   $(lpad(frac1, 5))%")
-    println(io, "  τ₂         $(lpad(round(fit.tau2, digits=3), 10)) ps   $(lpad(frac2, 5))%")
-    println(io, "  A₁         $(lpad(round(fit.amplitude1, sigdigits=4), 10))")
-    println(io, "  A₂         $(lpad(round(fit.amplitude2, sigdigits=4), 10))")
-    if has_irf
-        println(io, "  σ_IRF      $(lpad(round(fit.sigma, digits=3), 10)) ps")
-    end
-    println(io, "  t₀         $(lpad(round(fit.t0, digits=3), 10)) ps")
-    println(io, "  Offset     $(lpad(round(fit.offset, sigdigits=4), 10))")
-    println(io)
-    print(io, "  R² = $(round(fit.rsquared, digits=5))")
-end
 
 """
     MultiexpDecayFit
@@ -470,27 +413,6 @@ function Base.show(io::IO, ::MIME"text/plain", fit::MultiexpDecayFit)
     println(io, "  Offset     $(lpad(round(fit.offset, sigdigits=4), 10))")
     println(io)
     print(io, "  R² = $(round(fit.rsquared, digits=5))")
-end
-
-"""
-    PumpProbeResult
-
-Complete result from pump-probe analysis.
-"""
-struct PumpProbeResult
-    t::Vector{Float64}
-    signal::Vector{Float64}
-    fit::ExpDecayIRFFit
-    fit_curve::Vector{Float64}
-    filename::String
-end
-
-function Base.show(io::IO, r::PumpProbeResult)
-    println(io, "PumpProbeResult: $(r.filename)")
-    println(io, "  Signal: $(r.fit.signal_type == :esa ? "ESA" : "GSB")")
-    println(io, "  τ = $(round(r.fit.tau, digits=2))")
-    println(io, "  σ_IRF = $(round(r.fit.sigma, digits=2))")
-    println(io, "  R² = $(round(r.fit.rsquared, digits=4))")
 end
 
 # =============================================================================
@@ -866,7 +788,7 @@ function format_results(r::MultiPeakFitResult)
     return String(take!(io))
 end
 
-function format_results(r::ExpDecayIRFFit)
+function format_results(r::ExpDecayFit)
     io = IOBuffer()
     signal_str = r.signal_type == :esa ? "ESA" : "GSB"
     has_irf = !isnan(r.sigma)
@@ -888,48 +810,6 @@ function format_results(r::ExpDecayIRFFit)
     return String(take!(io))
 end
 
-function format_results(r::ExpDecayFit)
-    io = IOBuffer()
-    signal_str = r.signal_type == :esa ? "ESA" : "GSB"
-
-    println(io, "## Exponential Decay Fit ($signal_str)")
-    println(io)
-    println(io, "| Parameter | Value |")
-    println(io, "|-----------|-------|")
-    println(io, "| τ | $(round(r.tau, digits=3)) |")
-    println(io, "| Amplitude | $(round(r.amplitude, sigdigits=4)) |")
-    println(io, "| Offset | $(round(r.offset, sigdigits=4)) |")
-    println(io)
-    println(io, "**R²:** $(round(r.rsquared, digits=5))")
-
-    return String(take!(io))
-end
-
-function format_results(r::BiexpDecayFit)
-    io = IOBuffer()
-    signal_str = r.signal_type == :esa ? "ESA" : "GSB"
-    has_irf = !isnan(r.sigma)
-
-    total_amp = abs(r.amplitude1) + abs(r.amplitude2)
-    w1 = total_amp > 0 ? round(100 * abs(r.amplitude1) / total_amp, digits=1) : 0.0
-    w2 = total_amp > 0 ? round(100 * abs(r.amplitude2) / total_amp, digits=1) : 0.0
-
-    println(io, "## Biexponential Decay Fit ($signal_str)")
-    println(io)
-    println(io, "| Component | τ (ps) | Amplitude | Weight |")
-    println(io, "|-----------|--------|-----------|--------|")
-    println(io, "| Fast | $(round(r.tau1, digits=3)) | $(round(r.amplitude1, sigdigits=4)) | $(w1)% |")
-    println(io, "| Slow | $(round(r.tau2, digits=3)) | $(round(r.amplitude2, sigdigits=4)) | $(w2)% |")
-    println(io)
-    if has_irf
-        println(io, "**σ_IRF:** $(round(r.sigma, digits=3)) ps | **t₀:** $(round(r.t0, digits=3)) ps | **Offset:** $(round(r.offset, sigdigits=4))")
-    else
-        println(io, "**t₀:** $(round(r.t0, digits=3)) ps | **Offset:** $(round(r.offset, sigdigits=4))")
-    end
-    println(io, "**R²:** $(round(r.rsquared, digits=5))")
-
-    return String(take!(io))
-end
 
 function format_results(r::MultiexpDecayFit)
     io = IOBuffer()
@@ -983,6 +863,63 @@ function format_results(r::GlobalFitResult)
     end
     println(io)
     println(io, "**Global R²:** $(round(r.rsquared, digits=5))")
+
+    return String(take!(io))
+end
+
+function format_results(r::PeakFitResult)
+    io = IOBuffer()
+
+    println(io, "## Peak Fit Result")
+    if !isempty(r.sample_id)
+        println(io, "**Sample:** $(r.sample_id)")
+    end
+    println(io)
+    println(io, "| Parameter | Value | Uncertainty |")
+    println(io, "|-----------|-------|-------------|")
+    for (i, name) in enumerate(r.params)
+        val = round(r.values[i], digits=4)
+        err = round(r.errors[i], digits=4)
+        println(io, "| $(name) | $(val) | ± $(err) |")
+    end
+    println(io)
+    println(io, "**Model:** $(r.model) | **R²:** $(round(r.r_squared, digits=5)) | **Region:** $(round(Int, r.region[1]))–$(round(Int, r.region[2]))")
+
+    return String(take!(io))
+end
+
+function format_results(r::TASpectrumFit)
+    io = IOBuffer()
+
+    println(io, "## TA Spectrum Fit")
+    println(io)
+
+    _label_names = Dict(:esa => "ESA (Excited State Absorption)",
+                        :gsb => "GSB (Ground State Bleach)",
+                        :se => "SE (Stimulated Emission)",
+                        :positive => "Positive", :negative => "Negative")
+
+    for (i, pk) in enumerate(r.peaks)
+        label_str = get(_label_names, pk.label, uppercase(string(pk.label)))
+        println(io, "### Peak $i: $label_str")
+        println(io)
+        println(io, "| Parameter | Value |")
+        println(io, "|-----------|-------|")
+        println(io, "| Model | $(pk.model) |")
+        println(io, "| Center | $(round(pk.center, digits=1)) |")
+        println(io, "| Width | $(round(pk.width, digits=2)) |")
+        println(io, "| Amplitude | $(round(pk.amplitude, sigdigits=4)) |")
+        println(io)
+    end
+
+    anharm = anharmonicity(r)
+    if !isnan(anharm)
+        println(io, "**Anharmonicity (Δν):** $(round(anharm, digits=1)) cm⁻¹")
+    end
+    if r.offset != 0.0
+        print(io, "**Offset:** $(round(r.offset, sigdigits=4)) | ")
+    end
+    println(io, "**R²:** $(round(r.rsquared, digits=5))")
 
     return String(take!(io))
 end

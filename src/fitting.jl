@@ -5,65 +5,6 @@ Model functions come from CurveFitModels.jl — this file contains
 automatic fitting routines that use those models.
 """
 
-using CurveFit
-using CurveFitModels
-
-"""
-    fit_decay(signal::Vector{Float64}; t0_threshold::Float64=0.1) -> ExpDecayFit
-
-Fit an exponential decay to a pump-probe signal.
-
-Automatically detects time zero and signal type (ESA vs GSB).
-"""
-function fit_decay(signal::Vector{Float64}; t0_threshold::Float64=0.1)
-    max_val = maximum(signal)
-    min_val = minimum(signal)
-
-    if abs(max_val) > abs(min_val)
-        signal_type = :esa
-        peak_val = max_val
-        peak_idx = argmax(signal)
-    else
-        signal_type = :gsb
-        peak_val = min_val
-        peak_idx = argmin(signal)
-    end
-
-    threshold = t0_threshold * peak_val
-    t0 = 1
-    for i in 1:peak_idx
-        if signal_type == :esa && signal[i] > threshold
-            t0 = i
-            break
-        elseif signal_type == :gsb && signal[i] < threshold
-            t0 = i
-            break
-        end
-    end
-
-    decay_signal = signal[peak_idx:end]
-    t_decay = Float64.(collect(0:length(decay_signal)-1))
-
-    n_end = min(10, length(decay_signal) ÷ 4)
-    offset0 = mean(decay_signal[end-n_end+1:end])
-
-    A0 = peak_val - offset0
-    tau0 = length(decay_signal) / 3.0
-
-    prob = NonlinearCurveFitProblem(single_exponential, [A0, tau0, offset0], t_decay, decay_signal)
-    sol = solve(prob)
-
-    A, tau, offset = coef(sol)
-
-    fitted_vals = single_exponential([A, tau, offset], t_decay)
-    resid = decay_signal .- fitted_vals
-    ss_res = sum(resid.^2)
-    ss_tot = sum((decay_signal .- mean(decay_signal)).^2)
-    rsquared = 1 - ss_res / ss_tot
-
-    return ExpDecayFit(A, tau, offset, t0, signal_type, resid, rsquared)
-end
-
 # Internal IRF functions
 
 function _erfc(x)
@@ -83,26 +24,35 @@ function _exp_decay_irf_conv(t, A, tau, t0, sigma)
     return (A / 2) * exp(arg_exp) * _erfc(arg_erfc)
 end
 
+# Internal helpers for fitting
+
+# From pre-computed residual sum of squares (e.g., rss(sol) from CurveFit)
+function _rsquared(y_data, ss_res::Real)
+    ss_tot = sum((y_data .- mean(y_data)).^2)
+    return ss_tot > 0 ? 1 - ss_res / ss_tot : 0.0
+end
+
+# From fitted values (e.g., for per-trace R² in global fitting)
+_rsquared(y_data, y_fit::AbstractVector) = _rsquared(y_data, sum((y_data .- y_fit).^2))
+
+function _detect_signal_type(signal)
+    max_val = maximum(signal)
+    min_val = minimum(signal)
+    if abs(max_val) >= abs(min_val)
+        return :esa, max_val, argmax(signal)
+    else
+        return :gsb, min_val, argmin(signal)
+    end
+end
+
 """
-    fit_decay_irf(t::Vector{Float64}, signal::Vector{Float64};
-                  sigma_init::Float64=5.0) -> ExpDecayIRFFit
+    fit_decay_irf(t, signal; sigma_init=5.0) -> ExpDecayFit
 
 Fit an exponential decay convolved with a Gaussian IRF to pump-probe data.
 """
-function fit_decay_irf(t::Vector{Float64}, signal::Vector{Float64};
-                       sigma_init::Float64=5.0)
-    max_val = maximum(signal)
-    min_val = minimum(signal)
-
-    if abs(max_val) > abs(min_val)
-        signal_type = :esa
-        peak_val = max_val
-        peak_idx = argmax(signal)
-    else
-        signal_type = :gsb
-        peak_val = min_val
-        peak_idx = argmin(signal)
-    end
+function fit_decay_irf(t::AbstractVector{<:Real}, signal::AbstractVector{<:Real};
+                       sigma_init::Real=5.0)
+    signal_type, peak_val, peak_idx = _detect_signal_type(signal)
 
     t0_init = t[peak_idx]
     n_edge = max(5, length(signal) ÷ 20)
@@ -138,13 +88,8 @@ function fit_decay_irf(t::Vector{Float64}, signal::Vector{Float64};
     tau = abs(tau)
     sigma = abs(sigma)
 
-    fitted_vals = model([A, tau, t0, sigma, offset], t)
-    resid = signal .- fitted_vals
-    ss_res = sum(resid.^2)
-    ss_tot = sum((signal .- mean(signal)).^2)
-    rsquared = 1 - ss_res / ss_tot
-
-    return ExpDecayIRFFit(A, tau, t0, sigma, offset, signal_type, resid, rsquared)
+    return ExpDecayFit(A, tau, t0, sigma, offset, signal_type,
+                       residuals(sol), _rsquared(signal, rss(sol)))
 end
 
 # Pulse width estimation
@@ -184,23 +129,23 @@ end
 # =============================================================================
 
 """
-    fit_exp_decay(trace::TATrace; n_exp=1, irf=true, irf_width=0.15, t_start=0.0, t_range=nothing)
+    fit_exp_decay(trace::TATrace; n_exp=1, irf=false, irf_width=0.15, t_start=0.0, t_range=nothing)
 
 Fit exponential decay to a transient absorption trace.
 
 # Arguments
 - `trace`: TATrace
 - `n_exp`: Number of exponential components (default 1)
-- `irf`: Include IRF convolution (default true)
+- `irf`: Include IRF convolution (default false)
 - `irf_width`: Initial guess for IRF σ in ps (default 0.15)
 - `t_start`: Start time for fitting when irf=false (default 0.0)
 - `t_range`: Optional (t_min, t_max) to restrict fit region
 
 # Returns
-- `n_exp=1`: `ExpDecayIRFFit`
+- `n_exp=1`: `ExpDecayFit`
 - `n_exp>1`: `MultiexpDecayFit`
 """
-function fit_exp_decay(trace::TATrace; n_exp::Int=1, irf::Bool=true, irf_width::Float64=0.15,
+function fit_exp_decay(trace::TATrace; n_exp::Int=1, irf::Bool=false, irf_width::Float64=0.15,
                        t_start::Float64=0.0, t_range=nothing)
     @assert n_exp >= 1 "n_exp must be at least 1"
 
@@ -226,13 +171,8 @@ function fit_exp_decay(trace::TATrace; n_exp::Int=1, irf::Bool=true, irf_width::
         t_fit = t[mask]
         signal_fit = signal[mask]
 
-        if abs(maximum(signal)) >= abs(minimum(signal))
-            signal_type = :esa
-            peak_val = maximum(signal_fit)
-        else
-            signal_type = :gsb
-            peak_val = minimum(signal_fit)
-        end
+        signal_type = first(_detect_signal_type(signal))
+        peak_val = signal_type == :esa ? maximum(signal_fit) : minimum(signal_fit)
 
         n_end = max(1, min(10, length(signal_fit) ÷ 4))
         offset0 = mean(signal_fit[end-n_end+1:end])
@@ -251,15 +191,9 @@ function fit_exp_decay(trace::TATrace; n_exp::Int=1, irf::Bool=true, irf_width::
         A, tau, offset = coef(sol)
         tau = abs(tau)
 
-        fitted_vals = model([A, tau, offset], t_fit)
-        resid = signal_fit .- fitted_vals
-        ss_res = sum(resid.^2)
-        ss_tot = sum((signal_fit .- mean(signal_fit)).^2)
-        rsquared = 1 - ss_res / ss_tot
-
-        return ExpDecayIRFFit(
+        return ExpDecayFit(
             A, tau, t_start, NaN, offset,
-            signal_type, resid, rsquared
+            signal_type, residuals(sol), _rsquared(signal_fit, rss(sol))
         )
     end
 end
@@ -289,13 +223,8 @@ function _fit_multiexp_decay(trace::TATrace; n_exp::Int, irf::Bool, irf_width::F
         signal_fit = signal[mask]
     end
 
-    if abs(maximum(signal)) >= abs(minimum(signal))
-        signal_type = :esa
-        peak_val = maximum(signal_fit)
-    else
-        signal_type = :gsb
-        peak_val = minimum(signal_fit)
-    end
+    signal_type = first(_detect_signal_type(signal))
+    peak_val = signal_type == :esa ? maximum(signal_fit) : minimum(signal_fit)
 
     n_end = max(1, min(10, length(signal_fit) ÷ 4))
     offset0 = mean(signal_fit[end-n_end+1:end])
@@ -349,8 +278,6 @@ function _fit_multiexp_decay(trace::TATrace; n_exp::Int, irf::Bool, irf_width::F
         t0 = p_opt[2*n_exp+1]
         sigma = abs(p_opt[2*n_exp+2])
         offset = p_opt[2*n_exp+3]
-
-        fitted_vals = multiexp_irf_model(p_opt, t_fit)
     else
         model = n_exponentials(n_exp)
 
@@ -376,142 +303,23 @@ function _fit_multiexp_decay(trace::TATrace; n_exp::Int, irf::Bool, irf_width::F
         offset = p_opt[end]
         t0 = t_fit[1]
         sigma = NaN
-
-        fitted_vals = model(p_opt, t_shifted)
     end
 
     sort_idx = sortperm(taus_fit)
     taus_sorted = taus_fit[sort_idx]
     amps_sorted = amps_fit[sort_idx]
 
-    resid = signal_fit .- fitted_vals
-    ss_res = sum(resid.^2)
-    ss_tot = sum((signal_fit .- mean(signal_fit)).^2)
-    rsquared = 1 - ss_res / ss_tot
+    rsquared = _rsquared(signal_fit, rss(sol))
+
+    max_reasonable_tau = 10 * (t_fit[end] - t_fit[1])
+    if any(τ -> τ > max_reasonable_tau, taus_sorted)
+        @warn "Multi-exponential fit may have failed — time constants unreasonably large. Consider fewer components."
+    end
 
     return MultiexpDecayFit(
         taus_sorted, amps_sorted,
         t0, sigma, offset,
-        signal_type, resid, rsquared
-    )
-end
-
-# =============================================================================
-# Biexponential fitting
-# =============================================================================
-
-function _biexp_irf_conv(t, A1, tau1, A2, tau2, t0, sigma, offset)
-    return _exp_decay_irf_conv(t, A1, tau1, t0, sigma) +
-           _exp_decay_irf_conv(t, A2, tau2, t0, sigma) + offset
-end
-
-"""
-    fit_biexp_decay(trace::TATrace; irf=true, irf_width=0.15, t_range=nothing) -> BiexpDecayFit
-
-Fit biexponential decay to a transient absorption trace.
-"""
-function fit_biexp_decay(trace::TATrace; irf::Bool=true, irf_width::Float64=0.15,
-                         t_start::Float64=0.0, t_range=nothing)
-    t = trace.time
-    signal = trace.signal
-
-    if !isnothing(t_range)
-        t_min, t_max = t_range
-        mask = (t .>= t_min) .& (t .<= t_max)
-        t = t[mask]
-        signal = signal[mask]
-    end
-
-    if irf
-        t_fit = t
-        signal_fit = signal
-    else
-        mask = t .>= t_start
-        t_fit = t[mask]
-        signal_fit = signal[mask]
-    end
-
-    if abs(maximum(signal)) >= abs(minimum(signal))
-        signal_type = :esa
-        peak_val = maximum(signal_fit)
-    else
-        signal_type = :gsb
-        peak_val = minimum(signal_fit)
-    end
-
-    n_end = max(1, min(10, length(signal_fit) ÷ 4))
-    offset0 = mean(signal_fit[end-n_end+1:end])
-
-    t_shifted = t_fit .- t_start
-
-    half_val = (peak_val + offset0) / 2
-    half_idx = findfirst(i -> begin
-        if signal_type == :esa
-            signal_fit[i] <= half_val
-        else
-            signal_fit[i] >= half_val
-        end
-    end, eachindex(signal_fit))
-    tau_est = isnothing(half_idx) ? t_shifted[end] / 3 : t_shifted[half_idx]
-    tau_est = max(tau_est, 0.1)
-
-    total_amp = peak_val - offset0
-    A1_0 = 0.3 * total_amp
-    A2_0 = 0.7 * total_amp
-    tau1_0 = tau_est / 3.0
-    tau2_0 = tau_est * 2.0
-
-    if irf
-        function biexp_irf_model(p, t_vec)
-            A1, tau1, A2, tau2, t0, sigma, offset = p
-            return [_biexp_irf_conv(t, A1, abs(tau1), A2, abs(tau2), t0, abs(sigma), offset)
-                    for t in t_vec]
-        end
-
-        p0 = [A1_0, tau1_0, A2_0, tau2_0, 0.0, irf_width, offset0]
-        prob = NonlinearCurveFitProblem(biexp_irf_model, p0, t_fit, signal_fit)
-        sol = solve(prob)
-
-        A1, tau1, A2, tau2, t0, sigma, offset = coef(sol)
-        tau1, tau2, sigma = abs(tau1), abs(tau2), abs(sigma)
-
-        fitted_vals = biexp_irf_model([A1, tau1, A2, tau2, t0, sigma, offset], t_fit)
-    else
-        biexp_model = n_exponentials(2)
-
-        t_shifted = t_fit .- t_fit[1]
-
-        p0 = [A1_0, tau1_0, A2_0, tau2_0, offset0]
-        prob = NonlinearCurveFitProblem(biexp_model, p0, t_shifted, signal_fit)
-        sol = solve(prob)
-
-        A1, tau1, A2, tau2, offset = coef(sol)
-        tau1, tau2 = abs(tau1), abs(tau2)
-        t0 = t_fit[1]
-        sigma = NaN
-
-        fitted_vals = biexp_model([A1, tau1, A2, tau2, offset], t_shifted)
-    end
-
-    max_reasonable_tau = 10 * (t_fit[end] - t_fit[1])
-    if tau1 > max_reasonable_tau || tau2 > max_reasonable_tau
-        @warn "Biexponential fit may have failed - time constants unreasonably large. Consider using single exponential fit."
-    end
-
-    if tau1 > tau2
-        tau1, tau2 = tau2, tau1
-        A1, A2 = A2, A1
-    end
-
-    resid = signal_fit .- fitted_vals
-    ss_res = sum(resid.^2)
-    ss_tot = sum((signal_fit .- mean(signal_fit)).^2)
-    rsquared = 1 - ss_res / ss_tot
-
-    return BiexpDecayFit(
-        tau1, tau2, A1, A2,
-        t0, sigma, offset,
-        signal_type, resid, rsquared
+        signal_type, residuals(sol), rsquared
     )
 end
 
@@ -532,7 +340,7 @@ function fit_global(traces::Vector{TATrace}; irf_width::Float64=0.15, labels=not
         labels = ["Trace $i" for i in 1:n_traces]
     end
 
-    individual_fits = [fit_exp_decay(tr; irf_width=irf_width) for tr in traces]
+    individual_fits = [fit_exp_decay(tr; irf=true, irf_width=irf_width) for tr in traces]
 
     tau_init = mean([f.tau for f in individual_fits])
     sigma_init = mean([f.sigma for f in individual_fits])
@@ -585,25 +393,17 @@ function fit_global(traces::Vector{TATrace}; irf_width::Float64=0.15, labels=not
     residuals_vec = Vector{Vector{Float64}}(undef, n_traces)
     rsquared_individual = zeros(n_traces)
 
-    y_pred_all = global_model(p_opt, x_all)
+    resid_all = residuals(sol)
+    y_pred_all = fitted(sol)
     idx = 1
     for i in 1:n_traces
         n_pts = length(traces[i].time)
-        y_pred_i = y_pred_all[idx:idx+n_pts-1]
-        y_data_i = traces[i].signal
-
-        residuals_vec[i] = y_data_i .- y_pred_i
-
-        ss_res = sum(residuals_vec[i].^2)
-        ss_tot = sum((y_data_i .- mean(y_data_i)).^2)
-        rsquared_individual[i] = 1 - ss_res / ss_tot
-
+        residuals_vec[i] = resid_all[idx:idx+n_pts-1]
+        rsquared_individual[i] = _rsquared(traces[i].signal, y_pred_all[idx:idx+n_pts-1])
         idx += n_pts
     end
 
-    ss_res_global = sum(sum.(r -> r.^2, residuals_vec))
-    ss_tot_global = sum((y_all .- mean(y_all)).^2)
-    rsquared_global = 1 - ss_res_global / ss_tot_global
+    rsquared_global = _rsquared(y_all, rss(sol))
 
     return GlobalFitResult(
         tau, sigma, t0,
@@ -618,7 +418,7 @@ end
 # Predict functions for fit results
 # =============================================================================
 
-function predict(fit::ExpDecayIRFFit, time::AbstractVector)
+function predict(fit::ExpDecayFit, time::AbstractVector)
     if isnan(fit.sigma)
         return [t >= fit.t0 ? fit.amplitude * exp(-(t - fit.t0) / fit.tau) + fit.offset : fit.offset
                 for t in time]
@@ -628,7 +428,7 @@ function predict(fit::ExpDecayIRFFit, time::AbstractVector)
     end
 end
 
-predict(fit::ExpDecayIRFFit, trace::TATrace) = predict(fit, trace.time)
+predict(fit::ExpDecayFit, trace::TATrace) = predict(fit, trace.time)
 
 function predict(fit::GlobalFitResult, traces::Vector{TATrace})
     n = length(traces)
@@ -642,20 +442,6 @@ function predict(fit::GlobalFitResult, traces::Vector{TATrace})
     return curves
 end
 
-function predict(fit::BiexpDecayFit, time::AbstractVector)
-    if isnan(fit.sigma)
-        return [t >= fit.t0 ?
-                fit.amplitude1 * exp(-(t - fit.t0) / fit.tau1) +
-                fit.amplitude2 * exp(-(t - fit.t0) / fit.tau2) + fit.offset :
-                fit.offset
-                for t in time]
-    else
-        return [_biexp_irf_conv(t, fit.amplitude1, fit.tau1, fit.amplitude2, fit.tau2,
-                                fit.t0, fit.sigma, fit.offset) for t in time]
-    end
-end
-
-predict(fit::BiexpDecayFit, trace::TATrace) = predict(fit, trace.time)
 
 function predict(fit::MultiexpDecayFit, time::AbstractVector)
     if isnan(fit.sigma)
@@ -677,111 +463,236 @@ end
 predict(fit::MultiexpDecayFit, trace::TATrace) = predict(fit, trace.time)
 
 # =============================================================================
-# TA Spectrum Fitting (ESA + GSB peaks)
+# TA Spectrum Fitting (generalized N-peak model)
 # =============================================================================
 
-_ta_model_full(p, ν) = @. p[1] * exp(-4 * log(2) * ((ν - p[2]) / p[3])^2) -
-                         p[4] * exp(-4 * log(2) * ((ν - p[5]) / p[6])^2) + p[7]
+const _PEAK_SIGNS = Dict(:esa => 1, :gsb => -1, :se => -1, :positive => 1, :negative => -1)
 
-_ta_model_no_offset(p, ν) = @. p[1] * exp(-4 * log(2) * ((ν - p[2]) / p[3])^2) -
-                               p[4] * exp(-4 * log(2) * ((ν - p[5]) / p[6])^2)
+function _build_ta_model(fns, signs, npps, fit_offset)
+    function model(p, x)
+        y = similar(p, length(x))
+        fill!(y, zero(eltype(p)))
 
-_ta_model_gsb_fwhm_fixed(p, ν, Γ_gsb) = @. p[1] * exp(-4 * log(2) * ((ν - p[2]) / p[3])^2) -
-                                           p[4] * exp(-4 * log(2) * ((ν - p[5]) / Γ_gsb)^2) + p[6]
+        p_idx = 1
+        for i in eachindex(fns)
+            npp = npps[i]
+            peak_p = p[p_idx:p_idx+npp-1]
+            y = y .+ signs[i] .* fns[i](peak_p, x)
+            p_idx += npp
+        end
 
-_ta_model_both_fixed(p, ν, Γ_gsb) = @. p[1] * exp(-4 * log(2) * ((ν - p[2]) / p[3])^2) -
-                                        p[4] * exp(-4 * log(2) * ((ν - p[5]) / Γ_gsb)^2)
+        if fit_offset
+            y = y .+ p[p_idx]
+        end
+
+        return y
+    end
+    return model
+end
+
+function _ta_initial_guesses(ν, y, peak_specs, signs, npps, fit_offset)
+    p0 = Float64[]
+
+    n_pos = count(s -> s > 0, signs)
+    n_neg = count(s -> s < 0, signs)
+
+    # Detect positive peaks (ESA-type) using find_peaks on the raw signal
+    pos_peaks = PeakInfo[]
+    if n_pos > 0
+        detected = find_peaks(ν, y; min_prominence=0.01)
+        if length(detected) < n_pos
+            detected = _synthesize_peak_guesses(ν, y, n_pos, detected)
+        elseif length(detected) > n_pos
+            sort!(detected, by=p -> p.prominence, rev=true)
+            detected = detected[1:n_pos]
+            sort!(detected, by=p -> p.position)
+        end
+        pos_peaks = detected
+    end
+
+    # Detect negative peaks (GSB/SE-type) by inverting the signal
+    neg_peaks = PeakInfo[]
+    if n_neg > 0
+        detected = find_peaks(ν, -y; min_prominence=0.01)
+        if length(detected) < n_neg
+            detected = _synthesize_peak_guesses(ν, -y, n_neg, detected)
+        elseif length(detected) > n_neg
+            sort!(detected, by=p -> p.prominence, rev=true)
+            detected = detected[1:n_neg]
+            sort!(detected, by=p -> p.position)
+        end
+        neg_peaks = detected
+    end
+
+    pos_idx = 0
+    neg_idx = 0
+
+    for (i, (label, fn)) in enumerate(peak_specs)
+        if signs[i] > 0
+            pos_idx += 1
+            pk = pos_peaks[pos_idx]
+        else
+            neg_idx += 1
+            pk = neg_peaks[neg_idx]
+        end
+
+        push!(p0, pk.prominence)
+        push!(p0, pk.position)
+        push!(p0, _width_guess(pk.width, fn))
+
+        if npps[i] >= 4 && fn === pseudo_voigt
+            push!(p0, 0.5)
+        end
+    end
+
+    if fit_offset
+        push!(p0, 0.0)
+    end
+
+    return p0
+end
 
 """
-    fit_ta_spectrum(spec::TASpectrum; region=nothing, gsb_fwhm=nothing, fit_offset=false) -> TASpectrumFit
+    fit_ta_spectrum(spec::TASpectrum; kwargs...) -> TASpectrumFit
 
-Fit a pump-probe spectrum with ESA and GSB Gaussian peaks.
+Fit a transient absorption spectrum with N peaks of arbitrary lineshape.
+
+Uses `find_peaks` to automatically detect initial peak positions from the data,
+so multiple well-separated peaks of the same type (e.g., three GSB peaks for
+W(CO)₆) are initialized correctly.
+
+# Keywords
+- `peaks=[:esa, :gsb]` — Peak types. Each element is either a `Symbol`
+  (`:esa`, `:gsb`, `:se`, `:positive`, `:negative`) or a `(Symbol, Function)`
+  tuple specifying label and lineshape model.
+- `model=gaussian` — Default lineshape for peaks specified as symbols only.
+- `region=nothing` — Optional `(x_min, x_max)` fitting region.
+- `fit_offset=false` — Whether to fit a constant offset.
+- `p0=nothing` — Manual initial parameter vector. Overrides automatic detection.
+
+# Peak signs
+- `:esa`, `:positive` → +1 (positive ΔA)
+- `:gsb`, `:se`, `:negative` → -1 (negative ΔA)
+
+# Examples
+```julia
+# Default: 1 Gaussian ESA + 1 Gaussian GSB
+result = fit_ta_spectrum(spec)
+
+# Three GSB peaks (e.g., W(CO)₆ carbonyl stretches)
+result = fit_ta_spectrum(spec; peaks=[:esa, :esa, :esa, :gsb, :gsb, :gsb])
+
+# Per-peak lineshapes
+result = fit_ta_spectrum(spec; peaks=[(:esa, lorentzian), (:gsb, gaussian)])
+
+# Access results
+result[:esa].center      # first ESA peak
+result[2].center         # second peak by index
+anharmonicity(result)    # GSB - ESA center (only if exactly 1 of each)
+predict(result, ν)       # full fitted curve
+predict_peak(result, 1)  # single peak contribution
+```
 """
-function fit_ta_spectrum(spec::TASpectrum; region=nothing, gsb_fwhm=nothing, fit_offset::Bool=false)
+function fit_ta_spectrum(spec::TASpectrum;
+                         peaks::AbstractVector=[:esa, :gsb],
+                         model::Function=gaussian,
+                         region=nothing,
+                         fit_offset::Bool=false,
+                         p0::Union{Nothing, AbstractVector}=nothing)
+
     if isnothing(region)
-        ν = spec.wavenumber
-        y = spec.signal
+        ν = collect(Float64, spec.wavenumber)
+        y = collect(Float64, spec.signal)
     else
         mask = (spec.wavenumber .>= region[1]) .& (spec.wavenumber .<= region[2])
-        ν = spec.wavenumber[mask]
-        y = spec.signal[mask]
+        ν = collect(Float64, spec.wavenumber[mask])
+        y = collect(Float64, spec.signal[mask])
     end
 
-    max_val = maximum(y)
-    min_val = minimum(y)
-    esa_idx = argmax(y)
-    gsb_idx = argmin(y)
-
-    ν_esa_init = ν[esa_idx]
-    ν_gsb_init = ν[gsb_idx]
-    A_esa_init = max_val
-    A_gsb_init = abs(min_val)
-    fwhm_init = 20.0
-
-    fix_gsb_fwhm = !isnothing(gsb_fwhm)
-    Γ_gsb_fixed = fix_gsb_fwhm ? gsb_fwhm : 0.0
-
-    if fit_offset && !fix_gsb_fwhm
-        p0 = [A_esa_init, ν_esa_init, fwhm_init, A_gsb_init, ν_gsb_init, fwhm_init, 0.0]
-        fit = solve(NonlinearCurveFitProblem(_ta_model_full, p0, ν, y))
-        p = coef(fit)
-        esa_amp, esa_center, esa_fwhm = p[1], p[2], abs(p[3])
-        gsb_amp, gsb_center, gsb_fwhm_fit = p[4], p[5], abs(p[6])
-        offset = p[7]
-
-    elseif fit_offset && fix_gsb_fwhm
-        model_gsb_fixed(p, ν) = _ta_model_gsb_fwhm_fixed(p, ν, Γ_gsb_fixed)
-        p0 = [A_esa_init, ν_esa_init, fwhm_init, A_gsb_init, ν_gsb_init, 0.0]
-        fit = solve(NonlinearCurveFitProblem(model_gsb_fixed, p0, ν, y))
-        p = coef(fit)
-        esa_amp, esa_center, esa_fwhm = p[1], p[2], abs(p[3])
-        gsb_amp, gsb_center = p[4], p[5]
-        gsb_fwhm_fit = gsb_fwhm
-        offset = p[6]
-
-    elseif !fit_offset && !fix_gsb_fwhm
-        p0 = [A_esa_init, ν_esa_init, fwhm_init, A_gsb_init, ν_gsb_init, fwhm_init]
-        fit = solve(NonlinearCurveFitProblem(_ta_model_no_offset, p0, ν, y))
-        p = coef(fit)
-        esa_amp, esa_center, esa_fwhm = p[1], p[2], abs(p[3])
-        gsb_amp, gsb_center, gsb_fwhm_fit = p[4], p[5], abs(p[6])
-        offset = 0.0
-
-    else  # !fit_offset && fix_gsb_fwhm
-        model_both_fixed(p, ν) = _ta_model_both_fixed(p, ν, Γ_gsb_fixed)
-        p0 = [A_esa_init, ν_esa_init, fwhm_init, A_gsb_init, ν_gsb_init]
-        fit = solve(NonlinearCurveFitProblem(model_both_fixed, p0, ν, y))
-        p = coef(fit)
-        esa_amp, esa_center, esa_fwhm = p[1], p[2], abs(p[3])
-        gsb_amp, gsb_center = p[4], p[5]
-        gsb_fwhm_fit = gsb_fwhm
-        offset = 0.0
+    peak_specs = if eltype(peaks) <: Symbol
+        [(label, model) for label in peaks]
+    else
+        [(label, fn) for (label, fn) in peaks]
     end
 
-    y_fit = predict_ta_spectrum_internal(ν, esa_amp, esa_center, esa_fwhm,
-                                          gsb_amp, gsb_center, gsb_fwhm_fit, offset)
-    residuals = y .- y_fit
-    ss_res = sum(residuals.^2)
-    ss_tot = sum((y .- mean(y)).^2)
-    rsquared = 1 - ss_res / ss_tot
+    n_peaks = length(peak_specs)
 
-    anharmonicity = gsb_center - esa_center
+    signs = Int[]
+    for (label, _) in peak_specs
+        haskey(_PEAK_SIGNS, label) || error("Unknown peak type :$label. Use :esa, :gsb, :se, :positive, or :negative.")
+        push!(signs, _PEAK_SIGNS[label])
+    end
 
-    return TASpectrumFit(esa_center, esa_fwhm, esa_amp,
-                         gsb_center, gsb_fwhm_fit, gsb_amp,
-                         offset, anharmonicity, rsquared, residuals)
+    fns = [fn for (_, fn) in peak_specs]
+    npps = [_n_peak_params(fn) for fn in fns]
+
+    p0_use = if isnothing(p0)
+        _ta_initial_guesses(ν, y, peak_specs, signs, npps, fit_offset)
+    else
+        collect(Float64, p0)
+    end
+
+    composite = _build_ta_model(fns, signs, npps, fit_offset)
+    prob = NonlinearCurveFitProblem(composite, p0_use, ν, y)
+    sol = solve(prob)
+    p_opt = coef(sol)
+
+    ta_peaks = TAPeak[]
+    idx = 1
+    for i in 1:n_peaks
+        label, fn = peak_specs[i]
+        npp = npps[i]
+        amp = abs(p_opt[idx])
+        center = p_opt[idx + 1]
+        width = abs(p_opt[idx + 2])
+        idx += npp
+
+        push!(ta_peaks, TAPeak(label, _model_name(fn), center, width, amp))
+    end
+
+    offset_val = fit_offset ? p_opt[end] : 0.0
+
+    return TASpectrumFit(
+        ta_peaks, offset_val,
+        _rsquared(y, rss(sol)), residuals(sol),
+        collect(p_opt), fns, signs, npps, fit_offset, ν
+    )
 end
 
-function predict_ta_spectrum_internal(ν, A_esa, ν_esa, Γ_esa, A_gsb, ν_gsb, Γ_gsb, offset)
-    return @. A_esa * exp(-4 * log(2) * ((ν - ν_esa) / Γ_esa)^2) -
-              A_gsb * exp(-4 * log(2) * ((ν - ν_gsb) / Γ_gsb)^2) + offset
+function predict(fit::TASpectrumFit)
+    return predict(fit, fit._x)
 end
 
-function predict(fit::TASpectrumFit, wavenumber::AbstractVector)
-    return predict_ta_spectrum_internal(wavenumber,
-                                        fit.esa_amplitude, fit.esa_center, fit.esa_fwhm,
-                                        fit.gsb_amplitude, fit.gsb_center, fit.gsb_fwhm,
-                                        fit.offset)
+function predict(fit::TASpectrumFit, x::AbstractVector)
+    x_f = collect(Float64, x)
+    y = zeros(length(x_f))
+    idx = 1
+    for i in eachindex(fit._peak_fns)
+        npp = fit._peak_npp[i]
+        peak_p = fit._coef[idx:idx+npp-1]
+        y .+= fit._peak_signs[i] .* fit._peak_fns[i](peak_p, x_f)
+        idx += npp
+    end
+    if fit._fit_offset
+        y .+= fit._coef[end]
+    end
+    return y
 end
 
 predict(fit::TASpectrumFit, spec::TASpectrum) = predict(fit, spec.wavenumber)
+
+function predict_peak(fit::TASpectrumFit, i::Int)
+    return predict_peak(fit, i, fit._x)
+end
+
+function predict_peak(fit::TASpectrumFit, i::Int, x::AbstractVector)
+    1 <= i <= length(fit.peaks) || throw(BoundsError(fit.peaks, i))
+    x_f = collect(Float64, x)
+    idx = 1
+    for j in 1:i-1
+        idx += fit._peak_npp[j]
+    end
+    npp = fit._peak_npp[i]
+    peak_p = fit._coef[idx:idx+npp-1]
+    return fit._peak_signs[i] .* fit._peak_fns[i](peak_p, x_f)
+end

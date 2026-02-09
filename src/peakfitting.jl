@@ -202,7 +202,7 @@ function fit_peaks(x::AbstractVector, y::AbstractVector;
     ci_vals = confint(sol)
 
     ss_res = rss(sol)
-    ss_tot = sum((y_f .- Statistics.mean(y_f)).^2)
+    ss_tot = sum((y_f .- mean(y_f)).^2)
     r_squared = ss_tot > 0 ? 1 - ss_res / ss_tot : 0.0
     mse_val = mse(sol)
 
@@ -243,7 +243,7 @@ function fit_peaks(spec::AbstractSpectroscopyData, region::Tuple{Real, Real}; kw
     x_full = xdata(spec)
     y_full = ydata(spec)
 
-    mask = region[1] .< x_full .< region[2]
+    mask = region[1] .<= x_full .<= region[2]
     x = x_full[mask]
     y = y_full[mask]
 

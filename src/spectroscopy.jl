@@ -1,7 +1,5 @@
 # Core spectroscopy analysis functions
 
-using SavitzkyGolay: savitzky_golay as _sg_filter
-
 # ============================================================================
 # BASIC UTILITY FUNCTIONS
 # ============================================================================
@@ -11,14 +9,14 @@ using SavitzkyGolay: savitzky_golay as _sg_filter
 
 Normalize array by maximum absolute value. Returns zeros if max is zero.
 """
-normalize(x) = (m = maximum(abs.(x)); m == 0 ? zeros(length(x)) : x ./ m)
+normalize(x) = (m = maximum(abs.(x)); m == 0 ? zero(x) : x ./ m)
 
 """
     time_index(times, t_target)
 
 Find index closest to target time value.
 """
-time_index(times, t_target) = argmin(abs.(times .- t_target))
+time_index(times, t_target) = _find_nearest_idx(times, t_target)
 
 # ============================================================================
 # TRANSMITTANCE <-> ABSORBANCE CONVERSIONS
@@ -55,93 +53,6 @@ function absorbance_to_transmittance(A::AbstractVector; percent::Bool=false)
 end
 
 # ============================================================================
-# TRANSIENT ABSORPTION ANALYSIS
-# ============================================================================
-
-"""
-    calc_ΔA(trace; mode=:transmission)
-
-Calculate change in absorbance (ΔA) from transient absorption data.
-
-Modes: `:difference`, `:transmission` (-ΔT/T), `:OD` (ΔOD = -log10(T_on/T_off))
-"""
-function calc_ΔA(trace; mode=:transmission)
-    if mode == :OD
-        return -log10.(trace.on ./ trace.off)
-    elseif mode == :transmission
-        return -trace.diff ./ trace.off
-    else
-        return trace.diff
-    end
-end
-
-"""
-    fit_decay_trace(time, signal; truncate_time=0.0, initial_tau, t0=nothing, fit_func=single_exponential)
-
-Fit a decay trace after truncating early points.
-Returns `(fit=sol, start_idx=idx)`.
-"""
-function fit_decay_trace(time, signal; truncate_time=0.0, initial_tau, t0=nothing, fit_func=single_exponential)
-    t0 = something(t0, time[argmax(abs.(signal))])
-    start_idx = searchsortedfirst(time, t0 + truncate_time)
-
-    t_fit = @view time[start_idx:end]
-    y_fit = @view signal[start_idx:end]
-    mask = isfinite.(t_fit) .& isfinite.(y_fit)
-    t_fit, y_fit = t_fit[mask], y_fit[mask]
-
-    fit = solve(NonlinearCurveFitProblem(fit_func, [y_fit[1], initial_tau, minimum(y_fit)], t_fit, y_fit))
-
-    return (fit=fit, start_idx=start_idx)
-end
-
-"""
-    extract_tau(fit; idx=2, digits=2)
-
-Extract time constant and standard error from exponential fit.
-"""
-extract_tau(fit; idx=2, digits=2) =
-    (τ = round(coef(fit)[idx], digits=digits),
-     στ = round(stderror(fit)[idx], digits=digits))
-
-"""
-    fit_global_decay(time, signals; start_idx, initial_tau)
-
-Fit a global decay model with shared τ across multiple traces.
-"""
-function fit_global_decay(time, signals; start_idx, initial_tau)
-    t_fit = @view time[start_idx:end]
-    signal_fits = [@view s[start_idx:end] for s in signals]
-
-    mask = isfinite.(t_fit)
-    for s in signal_fits
-        mask .&= isfinite.(s)
-    end
-    t_fit = t_fit[mask]
-    signal_fits = [s[mask] for s in signal_fits]
-
-    function global_model(p, t)
-        τ = abs(p[1])
-        n = length(signal_fits)
-        models = [
-            single_exponential((p[1 + i], τ, p[1 + n + i]), t)
-            for i in 1:n
-        ]
-        return vcat(models...)
-    end
-
-    y_fit = vcat(signal_fits...)
-    p0 = vcat(
-        initial_tau,
-        [signal_fits[i][1] for i in eachindex(signal_fits)]...,
-        [minimum(signal_fits[i]) for i in eachindex(signal_fits)]...,
-    )
-
-    fit = solve(NonlinearCurveFitProblem(global_model, p0, t_fit, y_fit))
-    return (fit=fit, start_idx=start_idx)
-end
-
-# ============================================================================
 # SPECTRUM SUBTRACTION
 # ============================================================================
 
@@ -149,7 +60,11 @@ end
     subtract_spectrum(sample, reference; scale=1.0, interpolate=false)
 
 Subtract a reference spectrum from a sample spectrum.
-Expects objects with `.x` and `.y` fields.
+
+Accepts `AbstractSpectroscopyData` types (uses `xdata`/`ydata` interface)
+or any objects with `.x` and `.y` fields.
+
+Returns `(x=..., y=...)` NamedTuple.
 """
 function subtract_spectrum(sample, reference; scale::Real=1.0, interpolate=false)
     if !interpolate
@@ -197,30 +112,11 @@ function subtract_spectrum(sample, reference; scale::Real=1.0, interpolate=false
     return (x=sample.x, y=y_subtracted)
 end
 
-# ============================================================================
-# LINEAR BASELINE CORRECTION
-# ============================================================================
-
-"""
-    linear_baseline_correction(x, y, anchor_points; window=5.0)
-
-Apply linear baseline correction using anchor points.
-"""
-function linear_baseline_correction(x, y, anchor_points; window=5.0)
-    lo, hi = anchor_points
-
-    lo_mask = (lo - window) .<= x .<= (lo + window)
-    hi_mask = (hi - window) .<= x .<= (hi + window)
-
-    x_lo, y_lo = Statistics.mean(x[lo_mask]), Statistics.mean(y[lo_mask])
-    x_hi, y_hi = Statistics.mean(x[hi_mask]), Statistics.mean(y[hi_mask])
-
-    m = (y_hi - y_lo) / (x_hi - x_lo)
-    b = y_lo - m * x_lo
-
-    baseline = @. m * x + b
-
-    return (x=x, y=y .- baseline, baseline=baseline)
+# Typed dispatch: AbstractSpectroscopyData → xdata/ydata interface
+function subtract_spectrum(sample::AbstractSpectroscopyData,
+                           reference::AbstractSpectroscopyData; kwargs...)
+    subtract_spectrum((x=xdata(sample), y=ydata(sample)),
+                      (x=xdata(reference), y=ydata(reference)); kwargs...)
 end
 
 # ============================================================================
@@ -242,18 +138,9 @@ function smooth_data(y; window=3)
         right_extend = min(half_w, n - i)
         start_idx = i - left_extend
         end_idx = i + right_extend
-        smoothed[i] = Statistics.mean(@view y[start_idx:end_idx])
+        smoothed[i] = mean(@view y[start_idx:end_idx])
     end
     return smoothed
-end
-
-"""
-    savitzky_golay(y; window=5, order=2)
-
-Apply Savitzky-Golay filter for smoothing while preserving peak shape.
-"""
-function savitzky_golay(y; window=5, order=2)
-    _sg_filter(y, window, order).y
 end
 
 """
@@ -262,7 +149,7 @@ end
 Calculate full width at half maximum (FWHM) of the dominant positive peak.
 """
 function calc_fwhm(x, y; smooth_window=5)
-    y_smooth = smooth_window > 1 ? savitzky_golay(y; window=smooth_window) : y
+    y_smooth = smooth_window > 1 ? _sg_filter(y, smooth_window, 2).y : y
 
     peak_idx = argmax(y_smooth)
     peak_val = y_smooth[peak_idx]

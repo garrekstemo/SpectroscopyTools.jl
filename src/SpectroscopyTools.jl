@@ -10,11 +10,16 @@ module SpectroscopyTools
 
 # Dependencies
 using CurveFit
+import CurveFit: residuals, predict, fitted
 using CurveFitModels
 using Statistics
 using LinearAlgebra
 using SparseArrays
 using Unitful
+using Peaks: findmaxima, peakproms!, peakwidths!
+using SavitzkyGolay: savitzky_golay as _sg_filter
+using Interpolations
+using JSON
 import PhysicalConstants.CODATA2022: h, c_0, ħ
 
 # Source files (order matters: types before functions that use them)
@@ -25,34 +30,36 @@ include("baseline.jl")
 include("peakdetection.jl")
 include("peakfitting.jl")
 include("fitting.jl")
+include("chirp.jl")
 
 # ==========================================================================
-# Exports — Types
+# Exports — Types & Interface
 # ==========================================================================
 export AbstractSpectroscopyData
 export xdata, ydata, zdata, xlabel, ylabel, zlabel, is_matrix
 export source_file, npoints, title
-export AxisType, time_axis, wavelength_axis
-export PumpProbeData, xaxis, xaxis_label
 export TATrace, TASpectrum, TAMatrix
-export TASpectrumFit, GlobalFitResult
-export ExpDecayFit, ExpDecayIRFFit, BiexpDecayFit, MultiexpDecayFit
-export n_exp, weights
-export PeakFitResult, MultiPeakFitResult
-export PumpProbeResult
-export report, format_results
+
+# ==========================================================================
+# Exports — Fit Results
+# ==========================================================================
+export ExpDecayFit, MultiexpDecayFit, GlobalFitResult
+export MultiPeakFitResult, PeakFitResult
+export TAPeak, TASpectrumFit, anharmonicity
 
 # ==========================================================================
 # Exports — Fitting
 # ==========================================================================
-export fit_exp_decay, fit_biexp_decay, fit_global, fit_ta_spectrum
-export fit_decay, fit_decay_irf
-export irf_fwhm, pulse_fwhm
+export fit_exp_decay, fit_global
+export fit_peaks, predict_peak, predict_baseline
+export fit_ta_spectrum
+export report, polynomial
 
 # ==========================================================================
-# Exports — Peak fitting
+# Exports — Chirp correction
 # ==========================================================================
-export fit_peaks, predict_peak, predict_baseline
+export ChirpCalibration, detect_chirp, correct_chirp, subtract_background
+export save_chirp, load_chirp
 
 # ==========================================================================
 # Exports — Peak detection
@@ -68,31 +75,26 @@ export correct_baseline
 # ==========================================================================
 # Exports — Spectroscopy utilities
 # ==========================================================================
-export normalize, time_index
-export calc_ΔA, fit_decay_trace, extract_tau, fit_global_decay
-export subtract_spectrum, linear_baseline_correction
-export smooth_data, savitzky_golay, calc_fwhm
+export normalize, subtract_spectrum
+export smooth_data, calc_fwhm
 export transmittance_to_absorbance, absorbance_to_transmittance
 
 # ==========================================================================
 # Exports — Unit conversions
 # ==========================================================================
-export parse_concentration, parse_time
 export wavenumber_to_wavelength, wavelength_to_wavenumber
 export wavenumber_to_energy, wavelength_to_energy, energy_to_wavelength
 export linewidth_to_decay_time, decay_time_to_linewidth
 
 # ==========================================================================
-# Re-exports from CurveFit
+# Re-exports from CurveFit.jl
 # ==========================================================================
 export solve, NonlinearCurveFitProblem
-export coef, stderror, confint
-export residuals, rss, mse, nobs, predict, isconverged
+export coef, residuals, predict, fitted, stderror, confint, rss, mse, nobs, isconverged
 
 # ==========================================================================
-# Re-exports from CurveFitModels
+# Re-exports from CurveFitModels.jl
 # ==========================================================================
-export gaussian, lorentzian, single_exponential, pseudo_voigt
-export n_exponentials
+export gaussian, lorentzian, pseudo_voigt, single_exponential
 
 end # module SpectroscopyTools

@@ -7,9 +7,6 @@ Provides:
 - `snip_baseline` — Statistics-sensitive Non-linear Iterative Peak-clipping (Ryan et al., 1988)
 """
 
-using SparseArrays
-using LinearAlgebra
-
 # =============================================================================
 # Asymmetric Least Squares (ALS)
 # =============================================================================
