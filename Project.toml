@@ -22,6 +22,7 @@ CurveFitModels = {path = "../CurveFitModels.jl"}
 [compat]
 CurveFit = "1.4"
 CurveFitModels = "0.1"
+Interpolations = "0.16.2"
 Peaks = "0.6"
 PhysicalConstants = "0.2"
 SavitzkyGolay = "0.9"
