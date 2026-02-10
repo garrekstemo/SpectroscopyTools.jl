@@ -60,6 +60,7 @@ export report, polynomial
 # ==========================================================================
 export ChirpCalibration, detect_chirp, correct_chirp, subtract_background
 export save_chirp, load_chirp
+export svd_filter, singular_values
 
 # ==========================================================================
 # Exports — Peak detection

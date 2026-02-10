@@ -2,6 +2,7 @@ using Test
 using SpectroscopyTools
 using Unitful
 using Statistics
+using LinearAlgebra: rank
 using JSON
 
 @testset "SpectroscopyTools.jl" begin
@@ -1157,6 +1158,92 @@ using JSON
             @test !haskey(cal.metadata, :threshold)
         end
 
+    end
+
+    @testset "SVD filtering" begin
+        time = collect(range(-1.0, 10.0, length=50))
+        wavelength = collect(range(400.0, 700.0, length=30))
+
+        # Build a rank-2 signal: two spectral components with different kinetics
+        signal = zeros(50, 30)
+        for j in eachindex(wavelength)
+            for i in eachindex(time)
+                t = time[i]
+                if t > 0
+                    # Component 1: fast decay, peaks at 500 nm
+                    signal[i, j] += 0.5 * exp(-t / 1.0) * exp(-((wavelength[j] - 500) / 30)^2)
+                    # Component 2: slow decay, peaks at 600 nm
+                    signal[i, j] += 0.3 * exp(-t / 5.0) * exp(-((wavelength[j] - 600) / 40)^2)
+                end
+            end
+        end
+
+        noise = 0.02 * randn(50, 30)
+        noisy_data = signal .+ noise
+
+        @testset "singular_values - TAMatrix" begin
+            matrix = TAMatrix(time, wavelength, noisy_data)
+            sv = singular_values(matrix)
+            @test length(sv) == min(50, 30)
+            @test issorted(sv, rev=true)
+            @test sv[1] > sv[end]
+        end
+
+        @testset "singular_values - raw matrix" begin
+            sv = singular_values(noisy_data)
+            @test length(sv) == min(50, 30)
+            @test issorted(sv, rev=true)
+        end
+
+        @testset "svd_filter - TAMatrix denoising" begin
+            matrix = TAMatrix(time, wavelength, noisy_data)
+            filtered = svd_filter(matrix; n_components=2)
+
+            @test filtered isa TAMatrix
+            @test size(filtered.data) == size(matrix.data)
+            @test filtered.time == matrix.time
+            @test filtered.wavelength == matrix.wavelength
+            @test filtered.metadata[:svd_filtered] == true
+            @test filtered.metadata[:svd_n_components] == 2
+
+            # Filtered should be closer to true signal than noisy data
+            error_noisy = sum((noisy_data .- signal).^2)
+            error_filtered = sum((filtered.data .- signal).^2)
+            @test error_filtered < error_noisy
+        end
+
+        @testset "svd_filter - raw matrix" begin
+            filtered = svd_filter(time, wavelength, noisy_data; n_components=2)
+            @test size(filtered) == size(noisy_data)
+
+            error_noisy = sum((noisy_data .- signal).^2)
+            error_filtered = sum((filtered .- signal).^2)
+            @test error_filtered < error_noisy
+        end
+
+        @testset "svd_filter - n_components=1 keeps dominant component" begin
+            matrix = TAMatrix(time, wavelength, noisy_data)
+            filtered = svd_filter(matrix; n_components=1)
+
+            # Rank-1 approximation
+            @test rank(filtered.data) == 1
+        end
+
+        @testset "svd_filter - full rank preserves data" begin
+            matrix = TAMatrix(time, wavelength, noisy_data)
+            max_comp = min(size(noisy_data)...)
+            filtered = svd_filter(matrix; n_components=max_comp)
+
+            @test filtered.data ≈ noisy_data atol=1e-10
+        end
+
+        @testset "svd_filter - input validation" begin
+            matrix = TAMatrix(time, wavelength, noisy_data)
+
+            @test_throws ArgumentError svd_filter(matrix; n_components=0)
+            @test_throws ArgumentError svd_filter(matrix; n_components=100)
+            @test_throws DimensionMismatch svd_filter(time, wavelength[1:5], noisy_data; n_components=2)
+        end
     end
 
 end

@@ -572,3 +572,109 @@ function load_chirp(path::String)
         metadata
     )
 end
+
+# =============================================================================
+# SVD filtering for TA matrix denoising
+# =============================================================================
+
+"""
+    svd_filter(matrix::TAMatrix; n_components::Int=5) -> TAMatrix
+
+Denoise a TA matrix by keeping only the first `n_components` singular value
+components. Higher-order components (dominated by noise) are discarded.
+
+This is a standard preprocessing step for broadband TA data. Typical usage:
+denoise first, then subtract background, detect chirp, and correct chirp.
+
+# Arguments
+- `matrix::TAMatrix`: Input time × wavelength ΔA matrix
+
+# Keywords
+- `n_components::Int=5`: Number of singular value components to retain.
+  Use [`singular_values`](@ref) to inspect the spectrum and choose.
+
+# Returns
+A new `TAMatrix` with filtered data. Metadata includes `:svd_filtered => true`
+and `:svd_n_components => n_components`.
+
+# Examples
+```julia
+sv = singular_values(matrix)  # inspect singular value spectrum
+filtered = svd_filter(matrix; n_components=3)
+```
+"""
+function svd_filter(matrix::TAMatrix; n_components::Int=5)
+    n_time, n_wl = size(matrix.data)
+    max_components = min(n_time, n_wl)
+    n_components < 1 && throw(ArgumentError("n_components must be >= 1"))
+    n_components > max_components && throw(ArgumentError(
+        "n_components ($n_components) exceeds matrix rank ($max_components)"))
+
+    F = svd(matrix.data)
+    S_filtered = copy(F.S)
+    S_filtered[n_components+1:end] .= 0.0
+    filtered_data = F.U * Diagonal(S_filtered) * F.Vt
+
+    metadata = copy(matrix.metadata)
+    metadata[:svd_filtered] = true
+    metadata[:svd_n_components] = n_components
+
+    return TAMatrix(copy(matrix.time), copy(matrix.wavelength), filtered_data, metadata)
+end
+
+"""
+    svd_filter(x::AbstractVector, y::AbstractVector, data::AbstractMatrix;
+               n_components::Int=5) -> Matrix{Float64}
+
+Denoise a raw data matrix by keeping only the first `n_components` singular
+value components. Returns the filtered matrix.
+
+# Arguments
+- `x`: First axis (e.g., time)
+- `y`: Second axis (e.g., wavelength)
+- `data`: Matrix of size `(length(x), length(y))`
+
+# Keywords
+- `n_components::Int=5`: Number of components to retain
+"""
+function svd_filter(x::AbstractVector, y::AbstractVector, data::AbstractMatrix;
+                    n_components::Int=5)
+    size(data) == (length(x), length(y)) || throw(DimensionMismatch(
+        "data size $(size(data)) doesn't match axes ($(length(x)), $(length(y)))"))
+    max_components = min(size(data)...)
+    n_components < 1 && throw(ArgumentError("n_components must be >= 1"))
+    n_components > max_components && throw(ArgumentError(
+        "n_components ($n_components) exceeds matrix rank ($max_components)"))
+
+    F = svd(Float64.(data))
+    S_filtered = copy(F.S)
+    S_filtered[n_components+1:end] .= 0.0
+    return F.U * Diagonal(S_filtered) * F.Vt
+end
+
+"""
+    singular_values(matrix::TAMatrix) -> Vector{Float64}
+
+Return the singular values of the TA data matrix. Inspect these to choose
+`n_components` for [`svd_filter`](@ref) — look for a gap between signal
+and noise components.
+
+# Examples
+```julia
+sv = singular_values(matrix)
+# Plot sv to find the elbow, then filter:
+filtered = svd_filter(matrix; n_components=3)
+```
+"""
+function singular_values(matrix::TAMatrix)
+    return svd(matrix.data).S
+end
+
+"""
+    singular_values(data::AbstractMatrix) -> Vector{Float64}
+
+Return the singular values of a raw data matrix.
+"""
+function singular_values(data::AbstractMatrix)
+    return svd(Float64.(data)).S
+end
