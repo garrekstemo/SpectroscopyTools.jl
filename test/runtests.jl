@@ -4,6 +4,8 @@ using Unitful
 using Statistics
 using LinearAlgebra: rank
 using JSON
+import Random
+Random.seed!(42)
 
 @testset "SpectroscopyTools.jl" begin
 
