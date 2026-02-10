@@ -684,50 +684,90 @@ end
 """
     GlobalFitResult
 
-Result of global fitting multiple traces with shared parameters.
+Result of global fitting multiple traces with shared time constants.
+
+Supports single-exponential (n_exp=1) and multi-exponential (n_exp>1)
+global analysis with shared τ values and per-trace amplitudes.
 
 # Fields
-- `tau`, `sigma`, `t0`: Shared parameters
-- `amplitudes`, `offsets`, `labels`: Per-trace parameters
-- `rsquared`, `rsquared_individual`, `residuals`: Fit quality
+- `taus::Vector{Float64}`: Shared time constants (sorted fast→slow)
+- `sigma::Float64`: Shared IRF width
+- `t0::Float64`: Shared time zero
+- `amplitudes::Matrix{Float64}`: Per-trace amplitudes (n_traces × n_exp)
+- `offsets::Vector{Float64}`: Per-trace offsets
+- `labels::Vector{String}`: Trace labels
+- `wavelengths::Union{Nothing, Vector{Float64}}`: Wavelength axis (from TAMatrix input)
+- `rsquared::Float64`: Global R²
+- `rsquared_individual::Vector{Float64}`: Per-trace R²
+- `residuals::Vector{Vector{Float64}}`: Per-trace residuals
+
+# Derived properties
+- `n_exp(fit)`: Number of exponential components
+- `das(fit)`: Decay-associated spectra (requires TAMatrix input)
 """
 struct GlobalFitResult
-    tau::Float64
+    taus::Vector{Float64}
     sigma::Float64
     t0::Float64
-    amplitudes::Vector{Float64}
+    amplitudes::Matrix{Float64}
     offsets::Vector{Float64}
     labels::Vector{String}
+    wavelengths::Union{Nothing, Vector{Float64}}
     rsquared::Float64
     rsquared_individual::Vector{Float64}
     residuals::Vector{Vector{Float64}}
 end
 
+n_exp(fit::GlobalFitResult) = length(fit.taus)
+
+"""
+    das(fit::GlobalFitResult) -> Matrix{Float64}
+
+Return the decay-associated spectra (DAS) as an `n_exp × n_wavelengths` matrix.
+Each row is the amplitude spectrum for one time constant.
+
+Requires that the fit was performed on a `TAMatrix` (wavelengths must be available).
+"""
+function das(fit::GlobalFitResult)
+    isnothing(fit.wavelengths) && error("DAS requires wavelength axis (use TAMatrix input)")
+    return permutedims(fit.amplitudes)  # n_exp × n_wavelengths
+end
+
 function Base.show(io::IO, r::GlobalFitResult)
-    print(io, "GlobalFitResult: τ = $(round(r.tau, digits=2)) ps, R² = $(round(r.rsquared, digits=4)) ($(length(r.amplitudes)) traces)")
+    n_e = length(r.taus)
+    n_tr = size(r.amplitudes, 1)
+    tau_str = join(["$(round(τ, digits=2))" for τ in r.taus], ", ")
+    print(io, "GlobalFitResult: τ = [$tau_str] ps, R² = $(round(r.rsquared, digits=4)) ($n_tr traces, $n_e exp)")
 end
 
 function Base.show(io::IO, ::MIME"text/plain", r::GlobalFitResult)
-    n = length(r.amplitudes)
+    n_tr = size(r.amplitudes, 1)
+    n_e = length(r.taus)
 
-    println(io, "GlobalFitResult ($(n) traces)")
+    println(io, "GlobalFitResult ($n_tr traces, $n_e component$(n_e == 1 ? "" : "s"))")
     println(io)
 
     println(io, "  Shared Parameters")
     println(io, "  ─────────────────────────────")
-    println(io, "  τ        $(lpad(round(r.tau, digits=3), 8)) ps")
+    for (i, τ) in enumerate(r.taus)
+        label = n_e == 1 ? "τ" : "τ$i"
+        println(io, "  $(rpad(label, 10))$(lpad(round(τ, digits=3), 8)) ps")
+    end
     println(io, "  σ_IRF    $(lpad(round(r.sigma, digits=3), 8)) ps")
     println(io, "  t₀       $(lpad(round(r.t0, digits=3), 8)) ps")
     println(io)
 
-    println(io, "  Trace         Amplitude      Offset       R²")
-    println(io, "  ─────────────────────────────────────────────────")
-    for i in 1:n
+    # Build header
+    amp_headers = n_e == 1 ? ["Amplitude"] : ["A$i" for i in 1:n_e]
+    header = "  $(rpad("Trace", 12))" * join([lpad(h, 12) for h in amp_headers], "") * "$(lpad("Offset", 12))$(lpad("R²", 10))"
+    println(io, header)
+    println(io, "  " * "─"^(length(header) - 2))
+    for i in 1:n_tr
         label = rpad(r.labels[i], 12)
-        amp = lpad(round(r.amplitudes[i], sigdigits=4), 12)
+        amps = join([lpad(round(r.amplitudes[i, j], sigdigits=4), 12) for j in 1:n_e], "")
         off = lpad(round(r.offsets[i], sigdigits=4), 12)
         r2 = round(r.rsquared_individual[i], digits=4)
-        println(io, "  $label $amp $off    $r2")
+        println(io, "  $label$amps$off$(lpad(r2, 10))")
     end
 
     println(io)
@@ -838,28 +878,36 @@ end
 
 function format_results(r::GlobalFitResult)
     io = IOBuffer()
-    n = length(r.amplitudes)
+    n_tr = size(r.amplitudes, 1)
+    n_e = length(r.taus)
 
-    println(io, "## Global Fit Results ($n traces)")
+    println(io, "## Global Fit Results ($n_tr traces, $n_e component$(n_e == 1 ? "" : "s"))")
     println(io)
     println(io, "### Shared Parameters")
     println(io)
     println(io, "| Parameter | Value |")
     println(io, "|-----------|-------|")
-    println(io, "| τ | $(round(r.tau, digits=3)) ps |")
+    for (i, τ) in enumerate(r.taus)
+        label = n_e == 1 ? "τ" : "τ$i"
+        println(io, "| $label | $(round(τ, digits=3)) ps |")
+    end
     println(io, "| σ_IRF | $(round(r.sigma, digits=3)) ps |")
     println(io, "| t₀ | $(round(r.t0, digits=3)) ps |")
     println(io)
     println(io, "### Per-Trace Parameters")
     println(io)
-    println(io, "| Trace | Amplitude | Offset | R² |")
-    println(io, "|-------|-----------|--------|----|")
-    for i in 1:n
+
+    amp_headers = n_e == 1 ? ["Amplitude"] : ["A$i" for i in 1:n_e]
+    header = "| Trace | " * join(amp_headers, " | ") * " | Offset | R² |"
+    sep = "|" * join(fill("---", n_e + 3), "|") * "|"
+    println(io, header)
+    println(io, sep)
+    for i in 1:n_tr
         label = r.labels[i]
-        amp = round(r.amplitudes[i], sigdigits=4)
+        amps = join([string(round(r.amplitudes[i, j], sigdigits=4)) for j in 1:n_e], " | ")
         off = round(r.offsets[i], sigdigits=4)
         r2 = round(r.rsquared_individual[i], digits=4)
-        println(io, "| $(label) | $(amp) | $(off) | $(r2) |")
+        println(io, "| $label | $amps | $off | $r2 |")
     end
     println(io)
     println(io, "**Global R²:** $(round(r.rsquared, digits=5))")

@@ -324,48 +324,93 @@ function _fit_multiexp_decay(trace::TATrace; n_exp::Int, irf::Bool, irf_width::F
 end
 
 # =============================================================================
-# Global fitting: shared time constant across multiple traces
+# Global fitting: shared time constants across multiple traces
 # =============================================================================
 
 """
-    fit_global(traces::Vector{TATrace}; irf_width=0.15, labels=nothing) -> GlobalFitResult
+    fit_global(traces::Vector{TATrace}; n_exp=1, irf_width=0.15, labels=nothing) -> GlobalFitResult
 
-Fit multiple traces simultaneously with a shared time constant τ.
+Fit multiple traces simultaneously with shared time constant(s) τ.
+
+Supports single-exponential (`n_exp=1`) and multi-exponential (`n_exp>1`)
+global analysis. All traces share the same time constants, IRF width, and
+time zero, while amplitudes and offsets are fitted per-trace.
+
+# Keywords
+- `n_exp::Int=1`: Number of exponential components
+- `irf_width::Float64=0.15`: Initial guess for IRF σ in ps
+- `labels=nothing`: Optional trace labels (defaults to "Trace 1", "Trace 2", ...)
+
+# Returns
+`GlobalFitResult` with shared `taus` and per-trace `amplitudes` matrix.
+
+# Examples
+```julia
+# Single-exponential global fit
+result = fit_global([trace_esa, trace_gsb])
+
+# Multi-exponential with 2 shared time constants
+result = fit_global([trace1, trace2, trace3]; n_exp=2)
+report(result)
+```
 """
-function fit_global(traces::Vector{TATrace}; irf_width::Float64=0.15, labels=nothing)
+function fit_global(traces::Vector{TATrace}; n_exp::Int=1, irf_width::Float64=0.15, labels=nothing)
     n_traces = length(traces)
     @assert n_traces >= 2 "Need at least 2 traces for global fitting"
+    @assert n_exp >= 1 "n_exp must be at least 1"
 
     if isnothing(labels)
         labels = ["Trace $i" for i in 1:n_traces]
     end
 
-    individual_fits = [fit_exp_decay(tr; irf=true, irf_width=irf_width) for tr in traces]
+    # Bootstrap initial guesses from individual fits
+    individual_fits = [fit_exp_decay(tr; n_exp=n_exp, irf=true, irf_width=irf_width) for tr in traces]
 
-    tau_init = mean([f.tau for f in individual_fits])
-    sigma_init = mean([f.sigma for f in individual_fits])
-    t0_init = mean([f.t0 for f in individual_fits])
+    # Extract shared parameter inits (average across traces)
+    if n_exp == 1
+        taus_init = [mean([f.tau for f in individual_fits])]
+        sigma_init = mean([f.sigma for f in individual_fits])
+        t0_init = mean([f.t0 for f in individual_fits])
+        amps_init = [[f.amplitude] for f in individual_fits]
+        offsets_init = [f.offset for f in individual_fits]
+    else
+        taus_init = [mean([f.taus[j] for f in individual_fits]) for j in 1:n_exp]
+        sigma_init = mean([f.sigma for f in individual_fits])
+        t0_init = mean([f.t0 for f in individual_fits])
+        amps_init = [f.amplitudes for f in individual_fits]
+        offsets_init = [f.offset for f in individual_fits]
+    end
 
-    p0 = Float64[tau_init, sigma_init, t0_init]
-    for f in individual_fits
-        push!(p0, f.amplitude)
-        push!(p0, f.offset)
+    # Parameter layout: [τ₁...τₙ, σ, t₀, A₁₁...A₁ₙ, off₁, A₂₁...A₂ₙ, off₂, ...]
+    n_shared = n_exp + 2
+    n_per_trace = n_exp + 1
+
+    p0 = Float64[]
+    append!(p0, taus_init)
+    push!(p0, sigma_init)
+    push!(p0, t0_init)
+    for i in 1:n_traces
+        append!(p0, amps_init[i])
+        push!(p0, offsets_init[i])
     end
 
     total_len = sum(length(tr.time) for tr in traces)
 
     function global_model(p, dummy_x)
-        tau, sigma, t0 = abs(p[1]), abs(p[2]), p[3]
+        taus = abs.(p[1:n_exp])
+        sigma = abs(p[n_exp+1])
+        t0 = p[n_exp+2]
 
         y_pred = similar(p, total_len)
         idx = 1
         for i in 1:n_traces
-            A = p[3 + 2*(i-1) + 1]
-            offset = p[3 + 2*(i-1) + 2]
+            base = n_shared + (i-1) * n_per_trace
+            amps = p[base+1:base+n_exp]
+            offset = p[base+n_exp+1]
             t_vec = traces[i].time
 
             for t in t_vec
-                y_pred[idx] = _exp_decay_irf_conv(t, A, tau, t0, sigma) + offset
+                y_pred[idx] = _multiexp_irf_conv(t, taus, amps, t0, sigma, offset)
                 idx += 1
             end
         end
@@ -383,13 +428,25 @@ function fit_global(traces::Vector{TATrace}; irf_width::Float64=0.15, labels=not
     sol = solve(prob)
     p_opt = coef(sol)
 
-    tau = abs(p_opt[1])
-    sigma = abs(p_opt[2])
-    t0 = p_opt[3]
+    # Extract results
+    taus_fit = abs.(p_opt[1:n_exp])
+    sigma = abs(p_opt[n_exp+1])
+    t0 = p_opt[n_exp+2]
 
-    amplitudes = [p_opt[3 + 2*(i-1) + 1] for i in 1:n_traces]
-    offsets = [p_opt[3 + 2*(i-1) + 2] for i in 1:n_traces]
+    amplitudes = Matrix{Float64}(undef, n_traces, n_exp)
+    offsets = Vector{Float64}(undef, n_traces)
+    for i in 1:n_traces
+        base = n_shared + (i-1) * n_per_trace
+        amplitudes[i, :] = p_opt[base+1:base+n_exp]
+        offsets[i] = p_opt[base+n_exp+1]
+    end
 
+    # Sort time constants fast→slow, reorder amplitude columns to match
+    sort_idx = sortperm(taus_fit)
+    taus_sorted = taus_fit[sort_idx]
+    amplitudes = amplitudes[:, sort_idx]
+
+    # Compute per-trace residuals and R²
     residuals_vec = Vector{Vector{Float64}}(undef, n_traces)
     rsquared_individual = zeros(n_traces)
 
@@ -406,11 +463,63 @@ function fit_global(traces::Vector{TATrace}; irf_width::Float64=0.15, labels=not
     rsquared_global = _rsquared(y_all, rss(sol))
 
     return GlobalFitResult(
-        tau, sigma, t0,
+        taus_sorted, sigma, t0,
         amplitudes, offsets,
-        labels,
+        labels, nothing,
         rsquared_global, rsquared_individual,
         residuals_vec
+    )
+end
+
+"""
+    fit_global(matrix::TAMatrix; n_exp=1, irf_width=0.15, λ=nothing) -> GlobalFitResult
+
+Global analysis of a TAMatrix, extracting traces at each wavelength.
+
+Returns a `GlobalFitResult` with the `wavelengths` field populated,
+enabling decay-associated spectra (DAS) via `das(result)`.
+
+# Keywords
+- `n_exp::Int=1`: Number of exponential components
+- `irf_width::Float64=0.15`: Initial guess for IRF σ in ps
+- `λ=nothing`: Specific wavelengths to fit. If `nothing`, fits all wavelengths.
+
+# Examples
+```julia
+result = fit_global(matrix; n_exp=2)
+report(result)
+
+# Get decay-associated spectra
+spectra = das(result)  # n_exp × n_wavelengths matrix
+```
+"""
+function fit_global(matrix::TAMatrix; n_exp::Int=1, irf_width::Float64=0.15, λ=nothing)
+    if isnothing(λ)
+        wavelengths = matrix.wavelength
+    else
+        wavelengths = collect(Float64, λ)
+    end
+
+    traces = TATrace[]
+    actual_wavelengths = Float64[]
+    for wl in wavelengths
+        tr = matrix[λ=wl]
+        push!(traces, tr)
+        push!(actual_wavelengths, tr.wavelength)
+    end
+
+    wl_unit = _detect_wavelength_unit(matrix)
+    labels = [string(round(wl, digits=1), " ", wl_unit) for wl in actual_wavelengths]
+
+    result = fit_global(traces; n_exp=n_exp, irf_width=irf_width, labels=labels)
+
+    # Return a new GlobalFitResult with wavelengths populated
+    return GlobalFitResult(
+        result.taus, result.sigma, result.t0,
+        result.amplitudes, result.offsets,
+        result.labels, actual_wavelengths,
+        result.rsquared, result.rsquared_individual,
+        result.residuals
     )
 end
 
@@ -434,12 +543,28 @@ function predict(fit::GlobalFitResult, traces::Vector{TATrace})
     n = length(traces)
     curves = Vector{Vector{Float64}}(undef, n)
     for i in 1:n
-        A = fit.amplitudes[i]
-        offset = fit.offsets[i]
-        curves[i] = [_exp_decay_irf_conv(t, A, fit.tau, fit.t0, fit.sigma) + offset
+        amps = fit.amplitudes[i, :]
+        curves[i] = [_multiexp_irf_conv(t, fit.taus, amps, fit.t0, fit.sigma, fit.offsets[i])
                      for t in traces[i].time]
     end
     return curves
+end
+
+function predict(fit::GlobalFitResult, matrix::TAMatrix)
+    wavelengths = something(fit.wavelengths, matrix.wavelength)
+    reconstructed = Matrix{Float64}(undef, length(matrix.time), length(wavelengths))
+
+    for (j, wl) in enumerate(wavelengths)
+        wl_idx = _find_nearest_idx(matrix.wavelength, wl)
+        amps = fit.amplitudes[j, :]
+        for (i, t) in enumerate(matrix.time)
+            reconstructed[i, wl_idx] = _multiexp_irf_conv(t, fit.taus, amps, fit.t0, fit.sigma, fit.offsets[j])
+        end
+    end
+
+    metadata = copy(matrix.metadata)
+    metadata[:reconstructed] = true
+    return TAMatrix(matrix.time, matrix.wavelength, reconstructed, metadata)
 end
 
 

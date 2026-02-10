@@ -323,7 +323,7 @@ using JSON
         @test all(isfinite, curve)
     end
 
-    @testset "Global fitting - synthetic" begin
+    @testset "Global fitting - synthetic (n_exp=1)" begin
         t = collect(-2.0:0.1:30.0)
         tau_true = 5.0
         sigma_true = 0.3
@@ -336,19 +336,92 @@ using JSON
         trace_esa = TATrace(t, signal_esa)
         trace_gsb = TATrace(t, signal_gsb)
 
-        result = fit_global([trace_esa, trace_gsb]; labels=["ESA", "GSB"], irf_width=0.2)
+        result = fit_global([trace_esa, trace_gsb]; n_exp=1, labels=["ESA", "GSB"], irf_width=0.2)
 
         @test result isa GlobalFitResult
-        @test result.tau > 0
-        @test result.tau ≈ tau_true atol=2.0
-        @test length(result.amplitudes) == 2
+        @test length(result.taus) == 1
+        @test result.taus[1] > 0
+        @test result.taus[1] ≈ tau_true atol=2.0
+        @test size(result.amplitudes) == (2, 1)
         @test result.labels == ["ESA", "GSB"]
         @test result.rsquared > 0.95
+        @test isnothing(result.wavelengths)
+        @test SpectroscopyTools.n_exp(result) == 1
 
         # predict
         curves = predict(result, [trace_esa, trace_gsb])
         @test length(curves) == 2
         @test length(curves[1]) == length(t)
+    end
+
+    @testset "Global fitting - multi-exp (n_exp=2)" begin
+        t = collect(-2.0:0.1:50.0)
+        tau1_true = 2.0
+        tau2_true = 15.0
+        sigma_true = 0.3
+
+        # Trace 1: both components positive (ESA-like)
+        signal1 = [SpectroscopyTools._exp_decay_irf_conv(ti, 0.6, tau1_true, 0.0, sigma_true) +
+                   SpectroscopyTools._exp_decay_irf_conv(ti, 0.4, tau2_true, 0.0, sigma_true) + 0.01
+                   for ti in t]
+        # Trace 2: both components negative (GSB-like)
+        signal2 = [SpectroscopyTools._exp_decay_irf_conv(ti, -0.3, tau1_true, 0.0, sigma_true) +
+                   SpectroscopyTools._exp_decay_irf_conv(ti, -0.5, tau2_true, 0.0, sigma_true) - 0.005
+                   for ti in t]
+
+        trace1 = TATrace(t, signal1)
+        trace2 = TATrace(t, signal2)
+
+        result = fit_global([trace1, trace2]; n_exp=2, irf_width=0.2, labels=["ESA", "GSB"])
+
+        @test result isa GlobalFitResult
+        @test length(result.taus) == 2
+        @test result.taus[1] < result.taus[2]  # sorted fast→slow
+        @test result.taus[1] ≈ tau1_true atol=2.0
+        @test result.taus[2] ≈ tau2_true atol=5.0
+        @test size(result.amplitudes) == (2, 2)
+        @test result.rsquared > 0.95
+        @test SpectroscopyTools.n_exp(result) == 2
+    end
+
+    @testset "Global fitting - TAMatrix dispatch" begin
+        t = collect(-2.0:0.2:30.0)
+        wavelength = collect(500.0:20.0:700.0)
+        tau_true = 5.0
+        sigma_true = 0.3
+
+        data = zeros(length(t), length(wavelength))
+        for (j, wl) in enumerate(wavelength)
+            amp = 0.5 * sin((wl - 500) / 200 * pi)
+            for (i, ti) in enumerate(t)
+                data[i, j] = SpectroscopyTools._exp_decay_irf_conv(ti, amp, tau_true, 0.0, sigma_true) + 0.01
+            end
+        end
+
+        matrix = TAMatrix(t, wavelength, data)
+        result = fit_global(matrix; n_exp=1, irf_width=0.2)
+
+        @test result isa GlobalFitResult
+        @test !isnothing(result.wavelengths)
+        @test length(result.wavelengths) == length(wavelength)
+        @test result.taus[1] ≈ tau_true atol=2.0
+        @test size(result.amplitudes, 1) == length(wavelength)
+        @test result.rsquared > 0.95
+
+        # DAS accessor
+        d = das(result)
+        @test size(d) == (1, length(wavelength))
+    end
+
+    @testset "das accessor - error without wavelengths" begin
+        r = GlobalFitResult(
+            [5.0], 0.25, 0.1,
+            reshape([0.5, -0.3], 2, 1), [0.01, -0.005],
+            ["ESA", "GSB"], nothing,
+            0.9945, [0.9950, 0.9940],
+            [zeros(10), zeros(10)]
+        )
+        @test_throws ErrorException das(r)
     end
 
     @testset "predict - ExpDecayFit" begin
@@ -749,9 +822,9 @@ using JSON
 
     @testset "format_results - GlobalFitResult" begin
         result = GlobalFitResult(
-            8.5, 0.25, 0.1,
-            [0.5, -0.3], [0.01, -0.005],
-            ["ESA", "GSB"],
+            [8.5], 0.25, 0.1,
+            reshape([0.5, -0.3], 2, 1), [0.01, -0.005],
+            ["ESA", "GSB"], nothing,
             0.9945,
             [0.9950, 0.9940],
             [zeros(10), zeros(10)]

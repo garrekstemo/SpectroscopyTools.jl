@@ -45,7 +45,7 @@ export TATrace, TASpectrum, TAMatrix
 # ==========================================================================
 export ExpDecayFit, MultiexpDecayFit, GlobalFitResult
 export MultiPeakFitResult, PeakFitResult
-export TAPeak, TASpectrumFit, anharmonicity
+export TAPeak, TASpectrumFit, anharmonicity, das
 
 # ==========================================================================
 # Exports — Fitting
