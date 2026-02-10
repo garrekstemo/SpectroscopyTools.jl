@@ -8,6 +8,8 @@ A general-purpose spectroscopy analysis toolkit for Julia.
 
 SpectroscopyTools provides peak fitting, baseline correction, exponential decay fitting with IRF deconvolution, chirp correction, and unit conversions for spectroscopic data. It works with any spectroscopy discipline: ultrafast, FTIR, Raman, UV-vis, fluorescence.
 
+> **Note:** This package is currently being tested internally in our lab.
+
 ## Installation
 
 ```julia
