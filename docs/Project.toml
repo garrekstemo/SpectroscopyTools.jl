@@ -4,3 +4,6 @@ SpectroscopyTools = "f1436f7a-66ba-4269-a153-8996db8f0853"
 
 [sources]
 SpectroscopyTools = {path = ".."}
+
+[compat]
+Documenter = "1"

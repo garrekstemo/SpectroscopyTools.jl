@@ -4,7 +4,6 @@ using SpectroscopyTools
 makedocs(
     sitename = "SpectroscopyTools.jl",
     modules = [SpectroscopyTools],
-    remotes = nothing,
     format = Documenter.HTML(
         prettyurls = get(ENV, "CI", nothing) == "true",
     ),
