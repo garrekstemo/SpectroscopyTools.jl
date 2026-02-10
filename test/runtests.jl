@@ -551,6 +551,36 @@ using JSON
         # scale parameter
         result_scaled = subtract_spectrum(spec1, spec2; scale=0.5)
         @test result_scaled.y ≈ y1 .- 0.5 .* y2
+
+        # Mismatched lengths → error with interpolate hint
+        ν_short = collect(1900.0:2.0:2100.0)
+        y_short = @. 0.1 * exp(-((ν_short - 2000) / 30)^2)
+        @test_throws ErrorException subtract_spectrum((x=ν, y=y1), (x=ν_short, y=y_short))
+
+        # Misaligned x-values (same length, different grids) → error with hint
+        ν_shifted = ν .+ 0.5
+        y_shifted = @. 0.1 * exp(-((ν_shifted - 2000) / 30)^2)
+        @test_throws ErrorException subtract_spectrum((x=ν, y=y1), (x=ν_shifted, y=y_shifted))
+
+        # Small misalignment (< 0.01) passes without error
+        ν_tiny_shift = ν .+ 0.005
+        y_tiny = @. 0.1 * exp(-((ν_tiny_shift - 2000) / 30)^2)
+        result_close = subtract_spectrum((x=ν, y=y1), (x=ν_tiny_shift, y=y_tiny))
+        @test result_close.y ≈ y1 .- y_tiny
+
+        # interpolate=true with mismatched lengths → works
+        result_interp = subtract_spectrum((x=ν, y=y1), (x=ν_short, y=y_short); interpolate=true)
+        @test length(result_interp.x) == length(ν)
+        @test length(result_interp.y) == length(ν)
+
+        # interpolate=true with misaligned grids → works
+        result_interp2 = subtract_spectrum((x=ν, y=y1), (x=ν_shifted, y=y_shifted); interpolate=true)
+        @test result_interp2.x == ν
+        @test length(result_interp2.y) == length(ν)
+
+        # interpolate=true with scale
+        result_interp_scaled = subtract_spectrum((x=ν, y=y1), (x=ν_short, y=y_short); interpolate=true, scale=0.5)
+        @test length(result_interp_scaled.y) == length(ν)
     end
 
     @testset "Spectroscopy conversions - wavenumber/wavelength" begin
