@@ -88,6 +88,28 @@ Random.seed!(42)
         @test title(matrix) == "broadband-TA/"
     end
 
+    @testset "Semantic accessors - TATrace" begin
+        trace = TATrace([0.0, 1.0, 2.0], [0.1, 0.5, 0.3])
+        @test delay(trace) === trace.time
+        @test signal(trace) === trace.signal
+    end
+
+    @testset "Semantic accessors - TASpectrum" begin
+        spec = TASpectrum([2000.0, 2050.0, 2100.0], [0.1, 0.5, 0.3])
+        @test wavenumber(spec) === spec.wavenumber
+        @test signal(spec) === spec.signal
+    end
+
+    @testset "Semantic accessors - TAMatrix" begin
+        time = [0.0, 1.0, 2.0]
+        wl = [800.0, 850.0, 900.0]
+        data = rand(3, 3)
+        matrix = TAMatrix(time, wl, data)
+        @test wavelength(matrix) === matrix.wavelength
+        @test delay(matrix) === matrix.time
+        @test signal(matrix) === matrix.data
+    end
+
     @testset "TAMatrix indexing" begin
         time = [0.0, 1.0, 2.0, 3.0, 4.0]
         wavelength = [700.0, 750.0, 800.0, 850.0]
@@ -176,6 +198,14 @@ Random.seed!(42)
 
         res = residuals(result)
         @test length(res) == result.npoints
+    end
+
+    @testset "Semantic accessors - MultiPeakFitResult" begin
+        x = collect(1900.0:0.5:2200.0)
+        y = @. 0.5 / (1 + ((x - 2050.0) / 10.0)^2) + 0.01
+        result = fit_peaks(x, y; n_peaks=1)
+        @test xdata(result) === result._x
+        @test ydata(result) === result._y
     end
 
     @testset "Baseline correction - ALS" begin
@@ -475,6 +505,10 @@ Random.seed!(42)
         @test result[:gsb].label == :gsb
         @test anharmonicity(result) > 0
         @test result.rsquared > 0.95
+
+        # Semantic accessors
+        @test xdata(result) === result._x
+        @test wavenumber(result) === result._x
 
         y_fit = predict(result, ν)
         @test length(y_fit) == length(ν)

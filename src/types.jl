@@ -106,6 +106,21 @@ xlabel(::TATrace) = "Time (ps)"
 ylabel(::TATrace) = "ΔA"
 source_file(t::TATrace) = get(t.metadata, :filename, "")
 
+# Semantic accessors
+"""
+    delay(t::TATrace) -> Vector{Float64}
+
+Return the time delay axis (ps).
+"""
+delay(t::TATrace) = t.time
+
+"""
+    signal(t::TATrace) -> Vector{Float64}
+
+Return the ΔA signal.
+"""
+signal(t::TATrace) = t.signal
+
 # Pretty printing
 function Base.show(io::IO, t::TATrace)
     n = length(t.time)
@@ -158,6 +173,21 @@ ydata(s::TASpectrum) = s.signal
 xlabel(::TASpectrum) = "Wavenumber (cm⁻¹)"
 ylabel(::TASpectrum) = "ΔA"
 source_file(s::TASpectrum) = get(s.metadata, :filename, "")
+
+# Semantic accessors
+"""
+    wavenumber(s::TASpectrum) -> Vector{Float64}
+
+Return the wavenumber axis (cm⁻¹).
+"""
+wavenumber(s::TASpectrum) = s.wavenumber
+
+"""
+    signal(s::TASpectrum) -> Vector{Float64}
+
+Return the ΔA signal.
+"""
+signal(s::TASpectrum) = s.signal
 
 # Pretty printing
 function Base.show(io::IO, s::TASpectrum)
@@ -248,6 +278,9 @@ end
 
 Base.getindex(r::TASpectrumFit, i::Int) = r.peaks[i]
 Base.length(r::TASpectrumFit) = length(r.peaks)
+
+xdata(r::TASpectrumFit) = r._x
+wavenumber(r::TASpectrumFit) = r._x
 
 function Base.getindex(r::TASpectrumFit, label::Symbol)
     idx = findfirst(p -> p.label == label, r.peaks)
@@ -511,6 +544,9 @@ Base.iterate(r::MultiPeakFitResult, state) = iterate(r.peaks, state)
 Base.firstindex(r::MultiPeakFitResult) = 1
 Base.lastindex(r::MultiPeakFitResult) = length(r.peaks)
 
+xdata(r::MultiPeakFitResult) = r._x
+ydata(r::MultiPeakFitResult) = r._y
+
 function Base.show(io::IO, r::MultiPeakFitResult)
     n = length(r.peaks)
     model = n > 0 ? r.peaks[1].model : "unknown"
@@ -594,6 +630,28 @@ zdata(m::TAMatrix) = m.data
 is_matrix(::TAMatrix) = true
 source_file(m::TAMatrix) = get(m.metadata, :source, "")
 npoints(m::TAMatrix) = size(m.data)
+
+# Semantic accessors
+"""
+    wavelength(m::TAMatrix) -> Vector{Float64}
+
+Return the wavelength axis (nm).
+"""
+wavelength(m::TAMatrix) = m.wavelength
+
+"""
+    delay(m::TAMatrix) -> Vector{Float64}
+
+Return the time delay axis (ps).
+"""
+delay(m::TAMatrix) = m.time
+
+"""
+    signal(m::TAMatrix) -> Matrix{Float64}
+
+Return the ΔA signal matrix (n_time × n_wavelength).
+"""
+signal(m::TAMatrix) = m.data
 
 function xlabel(m::TAMatrix)
     minval, maxval = extrema(m.wavelength)

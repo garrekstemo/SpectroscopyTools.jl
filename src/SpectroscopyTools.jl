@@ -39,6 +39,7 @@ export AbstractSpectroscopyData
 export xdata, ydata, zdata, xlabel, ylabel, zlabel, is_matrix
 export source_file, npoints, title
 export TATrace, TASpectrum, TAMatrix
+export delay, signal, wavenumber, wavelength
 
 # ==========================================================================
 # Exports — Fit Results
