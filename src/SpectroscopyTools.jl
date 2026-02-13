@@ -31,6 +31,7 @@ include("peakdetection.jl")
 include("peakfitting.jl")
 include("fitting.jl")
 include("chirp.jl")
+include("plmap.jl")
 
 # ==========================================================================
 # Exports — Types & Interface
@@ -40,6 +41,9 @@ export xdata, ydata, zdata, xlabel, ylabel, zlabel, is_matrix
 export source_file, npoints, title
 export TATrace, TASpectrum, TAMatrix
 export delay, signal, wavenumber, wavelength
+
+# PL/Raman spatial mapping
+export PLMap, extract_spectrum, peak_centers, intensity
 
 # ==========================================================================
 # Exports — Fit Results

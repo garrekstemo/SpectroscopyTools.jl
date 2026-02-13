@@ -1385,4 +1385,84 @@ Random.seed!(42)
         end
     end
 
+    @testset "PLMap type and analysis" begin
+        # Build synthetic PLMap: 5×5 grid, 20 pixels per spectrum
+        nx, ny, np = 5, 5, 20
+        spectra = rand(nx, ny, np)
+        # Add a Gaussian peak at pixel 10 for center points
+        for ix in 2:4, iy in 2:4
+            for k in 1:np
+                spectra[ix, iy, k] += 5.0 * exp(-((k - 10)^2) / 4)
+            end
+        end
+        pixel = collect(1.0:np)
+        x = collect(range(-2.0, 2.0, length=nx))
+        y = collect(range(-2.0, 2.0, length=ny))
+        int_matrix = dropdims(sum(spectra; dims=3); dims=3)
+        meta = Dict{String,Any}("source_file" => "synthetic.lvm",
+                                 "nx" => nx, "ny" => ny, "pixel_range" => nothing)
+        m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+        # Type and interface
+        @test m isa AbstractSpectroscopyData
+        @test is_matrix(m) == true
+        @test xdata(m) === m.x
+        @test ydata(m) === m.y
+        @test zdata(m) === m.intensity
+        @test intensity(m) === m.intensity
+        @test npoints(m) == (5, 5)
+        @test xlabel(m) == "X (μm)"
+        @test ylabel(m) == "Y (μm)"
+        @test zlabel(m) == "PL Intensity"
+        @test source_file(m) == "synthetic.lvm"
+
+        # extract_spectrum by index
+        spec = extract_spectrum(m, 3, 3)
+        @test length(spec.signal) == np
+        @test spec.x ≈ x[3]
+
+        # extract_spectrum bounds check
+        @test_throws ErrorException extract_spectrum(m, 0, 1)
+        @test_throws ErrorException extract_spectrum(m, 1, 6)
+
+        # extract_spectrum by position
+        spec2 = extract_spectrum(m; x=0.0, y=0.0)
+        @test haskey(spec2, :ix)
+        @test haskey(spec2, :iy)
+
+        # normalize
+        mn = normalize(m)
+        @test mn isa PLMap
+        @test minimum(mn.intensity) ≈ 0.0
+        @test maximum(mn.intensity) ≈ 1.0
+
+        # subtract_background (auto)
+        mb = subtract_background(m)
+        @test mb isa PLMap
+        @test mb.spectra != m.spectra
+
+        # subtract_background (explicit)
+        mb2 = subtract_background(m; positions=[(x[1], y[1]), (x[end], y[1])])
+        @test mb2 isa PLMap
+
+        # peak_centers
+        centers = peak_centers(m)
+        @test size(centers) == (nx, ny)
+        valid = filter(!isnan, centers)
+        @test !isempty(valid)
+
+        # peak_centers with threshold=0 (no masking)
+        centers0 = peak_centers(m; threshold=0)
+        @test count(isnan, centers0) <= count(isnan, centers)
+
+        # show methods
+        buf = IOBuffer()
+        show(buf, m)
+        @test occursin("5×5", String(take!(buf)))
+
+        buf2 = IOBuffer()
+        show(buf2, MIME("text/plain"), m)
+        @test occursin("PLMap", String(take!(buf2)))
+    end
+
 end
