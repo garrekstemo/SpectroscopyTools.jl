@@ -140,22 +140,26 @@ function subtract_background(m::PLMap; positions=nothing, margin::Int=5)
     if !isnothing(positions)
         # Explicit: average spectra at user-specified (x, y) positions
         bg_spectra = zeros(length(m.pixel))
+        bg_positions = Tuple{Float64,Float64}[]
         for pos in positions
             spec = extract_spectrum(m; x=pos[1], y=pos[2])
             bg_spectra .+= spec.signal
+            push!(bg_positions, (spec.x, spec.y))
         end
         bg_spectra ./= length(positions)
     else
         # Auto: average corners from the bottom half of the map
         bg_spectra = zeros(length(m.pixel))
-        count = 0
+        bg_positions = Tuple{Float64,Float64}[]
         for ix in [1:margin; (nx-margin+1):nx]
             for iy in 1:margin
                 bg_spectra .+= vec(m.spectra[ix, iy, :])
-                count += 1
+                push!(bg_positions, (m.x[ix], m.y[iy]))
             end
         end
-        bg_spectra ./= count
+        bg_spectra ./= length(bg_positions)
+        @info "Auto background: averaged $(length(bg_positions)) spectra from bottom corners " *
+              "(ix=1:$margin and $(nx-margin+1):$nx, iy=1:$margin)"
     end
 
     # Subtract background spectrum from every grid point
@@ -170,7 +174,9 @@ function subtract_background(m::PLMap; positions=nothing, margin::Int=5)
         intensity = dropdims(sum(corrected; dims=3); dims=3)
     end
 
-    return PLMap(intensity, corrected, m.x, m.y, m.pixel, m.metadata)
+    new_metadata = copy(m.metadata)
+    new_metadata["background_positions"] = bg_positions
+    return PLMap(intensity, corrected, m.x, m.y, m.pixel, new_metadata)
 end
 
 # =============================================================================
@@ -220,7 +226,7 @@ regions (low PL signal) are transparent, on-flake regions show centroid position
 m = load_pl_map("scan.lvm"; nx=51, ny=51, pixel_range=(950, 1100))
 m = subtract_background(m)
 centers = peak_centers(m)
-heatmap(m.x, m.y, centers'; colormap=:viridis, nan_color=:transparent)
+heatmap(m.x, m.y, centers; colormap=:viridis, nan_color=:transparent)
 ```
 """
 function peak_centers(m::PLMap; pixel_range::Union{Tuple{Int,Int},Nothing}=nothing,
