@@ -81,7 +81,7 @@ export correct_baseline
 # ==========================================================================
 # Exports — Spectroscopy utilities
 # ==========================================================================
-export normalize, subtract_spectrum
+export normalize, normalize_intensity, subtract_spectrum
 export smooth_data, calc_fwhm
 export transmittance_to_absorbance, absorbance_to_transmittance
 

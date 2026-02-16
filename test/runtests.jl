@@ -1430,8 +1430,8 @@ Random.seed!(42)
         @test haskey(spec2, :ix)
         @test haskey(spec2, :iy)
 
-        # normalize
-        mn = normalize(m)
+        # normalize_intensity
+        mn = normalize_intensity(m)
         @test mn isa PLMap
         @test minimum(mn.intensity) ≈ 0.0
         @test maximum(mn.intensity) ≈ 1.0

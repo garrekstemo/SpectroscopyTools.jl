@@ -184,11 +184,11 @@ end
 # =============================================================================
 
 """
-    normalize(m::PLMap) -> PLMap
+    normalize_intensity(m::PLMap) -> PLMap
 
 Return a new PLMap with intensity normalized to [0, 1].
 """
-function normalize(m::PLMap)
+function normalize_intensity(m::PLMap)
     imin, imax = extrema(m.intensity)
     if imax == imin
         norm_intensity = zeros(size(m.intensity))
