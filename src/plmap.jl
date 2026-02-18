@@ -199,6 +199,131 @@ function normalize_intensity(m::PLMap)
 end
 
 # =============================================================================
+# Integrated intensity
+# =============================================================================
+
+"""
+    integrated_intensity(m::PLMap; pixel_range=nothing) -> Matrix{Float64}
+
+Compute the integrated intensity at each grid point.
+
+Without `pixel_range`, returns `m.intensity` (the precomputed full-range sum).
+With `pixel_range`, sums `m.spectra[:, :, p1:p2]` over the given pixel window.
+
+# Arguments
+- `pixel_range`: `(start, stop)` pixel indices to integrate over.
+  Falls back to the `pixel_range` stored in metadata, or uses `m.intensity` if unset.
+"""
+function integrated_intensity(m::PLMap; pixel_range::Union{Tuple{Int,Int},Nothing}=nothing)
+    pr = !isnothing(pixel_range) ? pixel_range : get(m.metadata, "pixel_range", nothing)
+    if !isnothing(pr)
+        p1 = max(1, pr[1])
+        p2 = min(length(m.pixel), pr[2])
+        return dropdims(sum(m.spectra[:, :, p1:p2]; dims=3); dims=3)
+    else
+        return m.intensity
+    end
+end
+
+# =============================================================================
+# Intensity mask
+# =============================================================================
+
+"""
+    intensity_mask(m::PLMap; pixel_range=nothing, threshold=0.05, exclude=nothing) -> NamedTuple
+
+Compute a boolean mask over the PLMap grid based on integrated intensity.
+
+Grid points where the integrated intensity is below `threshold` fraction of the
+intensity range are excluded (`false`). Spatial regions listed in `exclude` are
+also set to `false` regardless of intensity. This is useful for filtering out
+off-sample regions and known artifacts (e.g., substrate bands) before batch
+operations like fitting.
+
+The threshold is computed as: `cutoff = min + threshold × (max - min)`.
+
+# Arguments
+- `pixel_range`: `(start, stop)` pixel indices for computing integrated intensity.
+  If `nothing`, uses the full precomputed `m.intensity`.
+- `threshold`: Fraction of the intensity range (0.0 to 1.0). Default `0.05` (5%).
+- `exclude`: Spatial regions to exclude. Each region is a tuple of x and y ranges
+  in spatial coordinates (μm): `((x_min, x_max), (y_min, y_max))`. Accepts a
+  single region or a vector of regions. Grid points whose spatial coordinates
+  fall within any excluded region are masked out.
+
+# Returns
+A named tuple with fields:
+- `mask::BitMatrix` — `true` for included grid points
+- `n_included::Int` — number of included points
+- `n_total::Int` — total number of grid points
+- `intensity_min::Float64` — minimum integrated intensity
+- `intensity_max::Float64` — maximum integrated intensity
+- `cutoff::Float64` — absolute intensity cutoff value
+
+# Examples
+```julia
+m = load_pl_map("scan.lvm"; nx=51, ny=51)
+m = subtract_background(m)
+
+# Threshold only
+result = intensity_mask(m; pixel_range=(950, 1100), threshold=0.1)
+
+# Exclude a substrate band at the top of the map
+result = intensity_mask(m; threshold=0.05,
+    exclude=((-Inf, Inf), (40.0, Inf)))
+
+# Multiple exclusion regions
+result = intensity_mask(m; threshold=0.05,
+    exclude=[
+        ((-Inf, Inf), (40.0, Inf)),     # top substrate band
+        ((-50.0, -40.0), (-50.0, -40.0))  # noisy corner
+    ])
+```
+"""
+function intensity_mask(m::PLMap; pixel_range::Union{Tuple{Int,Int},Nothing}=nothing,
+                        threshold::Real=0.05,
+                        exclude=nothing)
+    ii = integrated_intensity(m; pixel_range=pixel_range)
+    imin, imax = extrema(ii)
+    cutoff = imin + Float64(threshold) * (imax - imin)
+    mask = ii .>= cutoff
+
+    if !isnothing(exclude)
+        _apply_exclusions!(mask, m.x, m.y, exclude)
+    end
+
+    return (
+        mask = mask,
+        n_included = count(mask),
+        n_total = length(mask),
+        intensity_min = imin,
+        intensity_max = imax,
+        cutoff = cutoff,
+    )
+end
+
+# Single region: ((x_min, x_max), (y_min, y_max))
+function _apply_exclusions!(mask::BitMatrix, x::Vector{Float64}, y::Vector{Float64},
+                            region::Tuple{Tuple{T1,T2}, Tuple{T3,T4}}) where {T1<:Real, T2<:Real, T3<:Real, T4<:Real}
+    xr, yr = region
+    for (ix, xv) in enumerate(x)
+        for (iy, yv) in enumerate(y)
+            if xr[1] <= xv <= xr[2] && yr[1] <= yv <= yr[2]
+                mask[ix, iy] = false
+            end
+        end
+    end
+end
+
+# Vector of regions
+function _apply_exclusions!(mask::BitMatrix, x::Vector{Float64}, y::Vector{Float64},
+                            regions::AbstractVector)
+    for region in regions
+        _apply_exclusions!(mask, x, y, region)
+    end
+end
+
+# =============================================================================
 # Peak center (centroid) map
 # =============================================================================
 
@@ -262,4 +387,193 @@ function peak_centers(m::PLMap; pixel_range::Union{Tuple{Int,Int},Nothing}=nothi
         end
     end
     return centers
+end
+
+# =============================================================================
+# Batch peak fitting
+# =============================================================================
+
+"""
+    fit_map(m::PLMap; kwargs...) -> FitMapResult
+
+Fit peaks at every grid point in a PLMap, returning a [`FitMapResult`](@ref)
+with per-pixel fit results and summary arrays for heatmap visualization.
+
+Uses **reference pixel seeding**: the brightest included pixel is fitted first
+with automatic initial parameter detection, and its converged parameters are
+used as starting values for all remaining pixels. This dramatically improves
+convergence for broad or noisy peaks where auto-detection is unreliable, since
+peak shapes vary smoothly across the spatial map.
+
+Fitting is multi-threaded when Julia is started with multiple threads
+(`julia --threads=auto`).
+
+# Keyword Arguments
+- `model::Function = gaussian` — Peak model (`gaussian`, `lorentzian`, `pseudo_voigt`)
+- `n_peaks::Int = 1` — Number of peaks to fit
+- `region::Union{Tuple{Real,Real}, Nothing} = nothing` — Spectral region to fit within
+- `baseline_order::Int = 1` — Polynomial baseline order
+- `mask::Union{BitMatrix, Nothing} = nothing` — Pre-computed fit mask.
+  If provided, `threshold`/`pixel_range`/`exclude` are ignored.
+- `threshold::Real = 0.0` — Intensity threshold for [`intensity_mask`](@ref) (0–1)
+- `pixel_range::Union{Tuple{Int,Int}, Nothing} = nothing` — Pixel range for mask computation
+- `exclude` — Spatial exclusion regions for [`intensity_mask`](@ref)
+- `abort::Union{Threads.Atomic{Bool}, Nothing} = nothing` — Set to `true` to stop early
+- `progress::Union{Function, Nothing} = nothing` — Callback `(n_done, n_total) -> nothing`
+
+# Example
+```julia
+m = load_pl_map("scan.lvm"; nx=51, ny=51, step_size=2.16)
+m = subtract_background(m)
+
+result = fit_map(m;
+    model = lorentzian,
+    region = (950, 1050),
+    threshold = 0.05)
+
+# Summary arrays for heatmaps
+heatmap(m.x, m.y, result.centers)
+heatmap(m.x, m.y, result.fwhms)
+
+# Per-pixel result
+result[10, 15]  # MultiPeakFitResult or nothing
+```
+"""
+function fit_map(m::PLMap;
+                 model::Function = gaussian,
+                 n_peaks::Int = 1,
+                 region::Union{Tuple{Real,Real}, Nothing} = nothing,
+                 baseline_order::Int = 1,
+                 mask::Union{BitMatrix, Nothing} = nothing,
+                 threshold::Real = 0.0,
+                 pixel_range::Union{Tuple{Int,Int}, Nothing} = nothing,
+                 exclude = nothing,
+                 abort::Union{Threads.Atomic{Bool}, Nothing} = nothing,
+                 progress::Union{Function, Nothing} = nothing)
+
+    nx, ny = length(m.x), length(m.y)
+    results = Matrix{Any}(nothing, nx, ny)
+
+    # Compute mask if not provided
+    if isnothing(mask) && (threshold > 0 || !isnothing(exclude))
+        mask = intensity_mask(m; pixel_range=pixel_range,
+                              threshold=Float64(threshold),
+                              exclude=exclude).mask
+    end
+
+    # Build flat list of pixels to fit
+    pixels_to_fit = Tuple{Int,Int}[]
+    n_skipped = 0
+    for iy in 1:ny
+        for ix in 1:nx
+            if !isnothing(mask) && !mask[ix, iy]
+                n_skipped += 1
+            else
+                push!(pixels_to_fit, (ix, iy))
+            end
+        end
+    end
+
+    n_to_fit = length(pixels_to_fit)
+
+    # Helper to extract and optionally crop a spectrum
+    function _extract_and_crop(ix, iy)
+        spec = extract_spectrum(m, ix, iy)
+        x, y = spec.pixel, spec.signal
+        if !isnothing(region)
+            rmask = region[1] .<= x .<= region[2]
+            x = x[rmask]
+            y = y[rmask]
+        end
+        return x, y
+    end
+
+    # Fit reference pixel (brightest included) to seed initial parameters
+    p0_ref = nothing
+    if !isempty(pixels_to_fit)
+        ref_ix, ref_iy = pixels_to_fit[1]
+        best_intensity = -Inf
+        for (ix, iy) in pixels_to_fit
+            val = m.intensity[ix, iy]
+            if val > best_intensity
+                best_intensity = val
+                ref_ix, ref_iy = ix, iy
+            end
+        end
+        try
+            x, y = _extract_and_crop(ref_ix, ref_iy)
+            ref_result = fit_peaks(x, y; model=model, n_peaks=n_peaks,
+                                   baseline_order=baseline_order)
+            results[ref_ix, ref_iy] = ref_result
+            p0_ref = ref_result._coef
+        catch
+            # Reference fit failed; proceed without seeding
+        end
+    end
+
+    # Thread-safe counters
+    n_done = Threads.Atomic{Int}(!isnothing(p0_ref) ? 1 : 0)
+    n_converged = Threads.Atomic{Int}(!isnothing(p0_ref) ? 1 : 0)
+    n_failed = Threads.Atomic{Int}(0)
+
+    if !isnothing(progress)
+        progress(n_done[], n_to_fit)
+    end
+
+    # Parallel fitting with reference seeding
+    Threads.@threads for idx in eachindex(pixels_to_fit)
+        !isnothing(abort) && abort[] && continue
+
+        ix, iy = pixels_to_fit[idx]
+        !isnothing(results[ix, iy]) && continue  # skip reference pixel
+
+        try
+            x, y = _extract_and_crop(ix, iy)
+            result = fit_peaks(x, y; model=model, n_peaks=n_peaks,
+                               baseline_order=baseline_order, p0=p0_ref)
+            results[ix, iy] = result
+            Threads.atomic_add!(n_converged, 1)
+        catch
+            Threads.atomic_add!(n_failed, 1)
+        end
+        Threads.atomic_add!(n_done, 1)
+        if !isnothing(progress)
+            progress(n_done[], n_to_fit)
+        end
+    end
+
+    # Build summary arrays from first peak of each fit
+    centers = fill(NaN, nx, ny)
+    fwhms = fill(NaN, nx, ny)
+    amplitudes = fill(NaN, nx, ny)
+    r_squareds = fill(NaN, nx, ny)
+
+    for iy in 1:ny
+        for ix in 1:nx
+            r = results[ix, iy]
+            isnothing(r) && continue
+            pk = r.peaks[1]
+            if haskey(pk, :center)
+                centers[ix, iy] = pk[:center].value
+            end
+            if haskey(pk, :fwhm)
+                fwhms[ix, iy] = pk[:fwhm].value
+            elseif haskey(pk, :sigma)
+                fwhms[ix, iy] = pk[:sigma].value * 2 * sqrt(2 * log(2))
+            end
+            if haskey(pk, :amplitude)
+                amplitudes[ix, iy] = pk[:amplitude].value
+            end
+            r_squareds[ix, iy] = r.r_squared
+        end
+    end
+
+    valid_rsq = filter(!isnan, vec(r_squareds))
+    med_rsq = isempty(valid_rsq) ? NaN : Statistics.median(valid_rsq)
+
+    return FitMapResult(
+        results, mask,
+        centers, fwhms, amplitudes, r_squareds,
+        n_converged[], n_failed[], n_skipped, med_rsq
+    )
 end

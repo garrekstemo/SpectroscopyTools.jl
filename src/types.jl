@@ -594,6 +594,64 @@ function Base.show(io::IO, ::MIME"text/plain", r::MultiPeakFitResult)
 end
 
 # =============================================================================
+# FitMapResult: Batch fitting results for spatial maps
+# =============================================================================
+
+"""
+    FitMapResult
+
+Result of batch peak fitting across a spatial map (e.g., PLMap).
+
+Contains per-pixel fit results and pre-extracted summary arrays suitable
+for heatmap visualization. Pixels that were skipped (masked) or failed
+to converge have `nothing` in the results matrix and `NaN` in summary arrays.
+
+Created by [`fit_map`](@ref).
+
+# Fields
+- `results::Matrix{Any}` — Per-pixel `MultiPeakFitResult` or `nothing`
+- `mask::Union{BitMatrix, Nothing}` — Fit mask used (if any)
+- `centers::Matrix{Float64}` — Peak center from first peak
+- `fwhms::Matrix{Float64}` — FWHM from first peak
+- `amplitudes::Matrix{Float64}` — Amplitude from first peak
+- `r_squareds::Matrix{Float64}` — Per-pixel R²
+- `n_converged::Int` — Number of successfully fitted pixels
+- `n_failed::Int` — Number of pixels where fitting threw an error
+- `n_skipped::Int` — Number of pixels excluded by the mask
+- `median_r_squared::Float64` — Median R² across converged pixels
+"""
+struct FitMapResult
+    results::Matrix{Any}
+    mask::Union{BitMatrix, Nothing}
+    centers::Matrix{Float64}
+    fwhms::Matrix{Float64}
+    amplitudes::Matrix{Float64}
+    r_squareds::Matrix{Float64}
+    n_converged::Int
+    n_failed::Int
+    n_skipped::Int
+    median_r_squared::Float64
+end
+
+Base.getindex(r::FitMapResult, ix::Int, iy::Int) = r.results[ix, iy]
+Base.size(r::FitMapResult) = size(r.results)
+
+function Base.show(io::IO, r::FitMapResult)
+    nx, ny = size(r.results)
+    print(io, "FitMapResult($(nx)×$(ny), $(r.n_converged) converged, median R² = $(round(r.median_r_squared, digits=4)))")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", r::FitMapResult)
+    nx, ny = size(r.results)
+    println(io, "FitMapResult")
+    println(io, "  Grid:       $(nx) × $(ny)")
+    println(io, "  Converged:  $(r.n_converged)")
+    println(io, "  Failed:     $(r.n_failed)")
+    println(io, "  Skipped:    $(r.n_skipped)")
+    print(io, "  Median R²:  $(round(r.median_r_squared, digits=5))")
+end
+
+# =============================================================================
 # TAMatrix: 2D Transient Absorption Data
 # =============================================================================
 
