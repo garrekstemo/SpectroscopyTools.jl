@@ -31,6 +31,17 @@ svd_filter
 singular_values
 ```
 
+## PL / Raman Mapping
+
+```@docs
+PLMap
+extract_spectrum
+integrated_intensity
+intensity_mask
+peak_centers
+normalize_intensity
+```
+
 ## Peak Fitting
 
 ```@docs
