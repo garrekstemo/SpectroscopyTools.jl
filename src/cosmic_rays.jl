@@ -237,7 +237,34 @@ function _neighbor_spectra(spectra::AbstractArray{<:Any,3}, ix::Int, iy::Int,
 end
 
 """
-    detect_cosmic_rays(m::PLMap; threshold=5.0, pixel_range=nothing) -> CosmicRayMapResult
+    _unflag_wide_runs!(mask, ix, iy, p1, p2, max_width)
+
+Scan channels `p1:p2` for pixel `(ix, iy)` and unflag any contiguous run of
+flagged channels that is wider than `max_width`. Cosmic ray spikes are narrow;
+wider runs are spectral variation at spatial boundaries.
+"""
+function _unflag_wide_runs!(mask::BitArray{3}, ix::Int, iy::Int,
+                            p1::Int, p2::Int, max_width::Int)
+    k = p1
+    while k <= p2
+        if mask[ix, iy, k]
+            run_start = k
+            while k <= p2 && mask[ix, iy, k]
+                k += 1
+            end
+            if k - run_start > max_width
+                for j in run_start:(k - 1)
+                    mask[ix, iy, j] = false
+                end
+            end
+        else
+            k += 1
+        end
+    end
+end
+
+"""
+    detect_cosmic_rays(m::PLMap; threshold=5.0, pixel_range=nothing, max_spike_width=7) -> CosmicRayMapResult
 
 Detect cosmic ray spikes across all spectra in a PLMap using nearest-neighbor
 comparison.
@@ -247,9 +274,14 @@ spatial neighbors at each channel. The residual (pixel minus reference) is then
 tested for positive outliers using the MAD-based robust scale estimate. Channels
 where the residual exceeds `threshold × σ` above the median residual are flagged.
 
-This approach captures the full cosmic ray spike including shoulders, because
-any channel elevated above the spatial neighborhood is detected. Real spectral
-features present in neighbors cancel in the residual and are not flagged.
+Two filters prevent false positives at spatial boundaries where spectra change:
+- **Width filter**: contiguous flagged runs wider than `max_spike_width` are
+  unflagged — cosmic rays span 1–5 channels; wider runs are spectral variation.
+- **Fraction cap**: if more than 5% of channels are still flagged after the
+  width filter, all flags for that pixel are cleared.
+
+A global noise floor (median of per-pixel σ estimates) prevents over-sensitivity
+in spatially homogeneous regions.
 
 # Arguments
 - `m`: PLMap with 3D spectra array `(nx, ny, n_pixel)`
@@ -258,6 +290,8 @@ features present in neighbors cancel in the residual and are not flagged.
   this subrange of each spectrum is checked for cosmic rays. Channels outside
   the range are never flagged. Defaults to the `pixel_range` in `m.metadata`,
   or the full spectrum if unset.
+- `max_spike_width`: maximum width (in channels) of a contiguous flagged run
+  to keep (default 7). Runs wider than this are unflagged as spectral variation.
 
 # Returns
 A [`CosmicRayMapResult`](@ref) with a 3D boolean mask and summary statistics.
@@ -269,7 +303,8 @@ println("Found \$(cr.count) cosmic rays in \$(cr.affected_spectra) spectra")
 ```
 """
 function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
-                            pixel_range::Union{Tuple{Int,Int},Nothing}=nothing)
+                            pixel_range::Union{Tuple{Int,Int},Nothing}=nothing,
+                            max_spike_width::Int=7)
     nx, ny, np = size(m.spectra)
     mask = falses(nx, ny, np)
 
@@ -318,18 +353,21 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
         mad_r < eps(Float64) && continue
         σ = max(mad_r / 0.6745, noise_floor)
 
-        n_flagged = 0
         for k in 1:n_ch
             if residual[k] - med_r > Float64(threshold) * σ
                 mask[ix, iy, k + p1 - 1] = true
-                n_flagged += 1
             end
         end
 
-        # Cosmic rays affect a handful of channels. If too many channels are
-        # flagged in one pixel, it's spatial spectral variation, not cosmic rays.
-        # Clear the flags for this pixel.
-        if n_flagged > n_ch ÷ 20  # > 5% of channels
+        # Cosmic ray spikes are narrow (1–5 channels). Broad contiguous runs
+        # of flagged channels indicate spectral variation at spatial boundaries,
+        # not cosmic rays. Unflag any run wider than max_spike_width.
+        _unflag_wide_runs!(mask, ix, iy, p1, p2, max_spike_width)
+
+        # Safety: if too many channels remain flagged after the width filter,
+        # it's spatial variation, not cosmic rays. Clear all flags.
+        remaining = count(@view mask[ix, iy, p1:p2])
+        if remaining > n_ch ÷ 20  # > 5% of channels
             for k in p1:p2
                 mask[ix, iy, k] = false
             end
