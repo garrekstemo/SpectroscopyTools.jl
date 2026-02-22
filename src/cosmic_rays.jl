@@ -7,10 +7,11 @@
 # 1D algorithm: Whitaker-Hayes modified z-score on first differences with
 # shoulder expansion for single spectra.
 #
-# PLMap algorithm: Nearest-neighbor comparison. Each pixel's spectrum is
-# compared to the median of its 4-connected spatial neighbors. Channels
-# where the residual is a significant positive outlier are flagged as
-# cosmic rays. Real features present in neighbors cancel in the residual.
+# PLMap algorithm: Most Similar Neighbor (MSN) comparison. Each pixel's
+# spectrum is compared to the 4-connected neighbor with the highest Pearson
+# correlation. Channels where the residual is a significant positive
+# outlier are flagged as cosmic rays. Using the most-similar neighbor
+# avoids false positives at spatial boundaries where spectra change.
 
 # =============================================================================
 # Result types
@@ -237,6 +238,39 @@ function _neighbor_spectra(spectra::AbstractArray{<:Any,3}, ix::Int, iy::Int,
 end
 
 """
+    _most_similar_neighbor(signal, neighbors) -> (index, correlation)
+
+Find the neighbor with the highest Pearson correlation to `signal`.
+Returns the 1-based index into `neighbors` and the correlation value.
+At spatial boundaries, the most-similar neighbor is on the same side,
+so real spectral differences don't create false residuals.
+"""
+function _most_similar_neighbor(signal::AbstractVector, neighbors::Vector)
+    best_idx = 1
+    best_corr = -Inf
+    n = length(signal)
+    # Precompute signal stats
+    s_mean = mean(signal)
+    s_centered = signal .- s_mean
+    s_ss = sqrt(sum(abs2, s_centered))
+
+    for (i, nb) in enumerate(neighbors)
+        nb_mean = mean(nb)
+        nb_centered = nb .- nb_mean
+        nb_ss = sqrt(sum(abs2, nb_centered))
+        if s_ss < eps(Float64) || nb_ss < eps(Float64)
+            continue
+        end
+        corr = sum(s_centered .* nb_centered) / (s_ss * nb_ss)
+        if corr > best_corr
+            best_corr = corr
+            best_idx = i
+        end
+    end
+    return (best_idx, best_corr)
+end
+
+"""
     _unflag_wide_runs!(mask, ix, iy, p1, p2, max_width)
 
 Scan channels `p1:p2` for pixel `(ix, iy)` and unflag any contiguous run of
@@ -266,15 +300,19 @@ end
 """
     detect_cosmic_rays(m::PLMap; threshold=5.0, pixel_range=nothing, max_spike_width=7) -> CosmicRayMapResult
 
-Detect cosmic ray spikes across all spectra in a PLMap using nearest-neighbor
-comparison.
+Detect cosmic ray spikes across all spectra in a PLMap using Most Similar
+Neighbor (MSN) comparison.
 
-For each pixel, computes a reference spectrum as the median of its 4-connected
-spatial neighbors at each channel. The residual (pixel minus reference) is then
+For each pixel, selects the 4-connected neighbor with the highest Pearson
+correlation as the reference spectrum. The residual (pixel minus MSN) is then
 tested for positive outliers using the MAD-based robust scale estimate. Channels
 where the residual exceeds `threshold × σ` above the median residual are flagged.
 
-Two filters prevent false positives at spatial boundaries where spectra change:
+Using the most-similar neighbor avoids false positives at spatial boundaries:
+real spectral differences cancel because the MSN is on the same side of the
+boundary. Only true cosmic ray spikes — absent from all neighbors — remain.
+
+Additional filters:
 - **Width filter**: contiguous flagged runs wider than `max_spike_width` are
   unflagged — cosmic rays span 1–5 channels; wider runs are spectral variation.
 - **Fraction cap**: if more than 5% of channels are still flagged after the
@@ -323,9 +361,12 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
         neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
         isempty(neighbors) && continue
         signal = @view m.spectra[ix, iy, p1:p2]
+        # Use most similar neighbor for noise estimation (consistent with detection)
+        best_idx, _ = _most_similar_neighbor(signal, neighbors)
+        ref = neighbors[best_idx]
         residual = Vector{Float64}(undef, n_ch)
         for k in 1:n_ch
-            residual[k] = signal[k] - median(getindex.(neighbors, k))
+            residual[k] = signal[k] - ref[k]
         end
         mad_r = median(abs.(residual .- median(residual)))
         if mad_r > eps(Float64)
@@ -340,11 +381,16 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
 
         signal = @view m.spectra[ix, iy, p1:p2]
 
-        # Residual: pixel minus median of neighbor spectra at each channel
+        # Most Similar Neighbor (MSN) reference: compare to the neighbor with
+        # the highest spectral correlation. At spatial boundaries, the MSN is
+        # on the same side of the boundary, so real spectral differences vanish
+        # in the residual. Only true cosmic ray spikes remain.
+        best_idx, _ = _most_similar_neighbor(signal, neighbors)
+        ref = neighbors[best_idx]
+
         residual = Vector{Float64}(undef, n_ch)
         for k in 1:n_ch
-            ref = median(getindex.(neighbors, k))
-            residual[k] = signal[k] - ref
+            residual[k] = signal[k] - ref[k]
         end
 
         # Flag positive outliers using MAD-based scale with noise floor
