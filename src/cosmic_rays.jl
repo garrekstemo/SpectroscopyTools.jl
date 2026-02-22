@@ -280,6 +280,25 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
 
     n_ch = p2 - p1 + 1
 
+    # Two-pass approach: first compute per-pixel noise estimates to establish
+    # a global noise floor, then flag with max(local_σ, floor). This prevents
+    # false positives in spatially homogeneous regions where local σ is tiny.
+    pixel_sigmas = Float64[]
+    for iy in 1:ny, ix in 1:nx
+        neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
+        isempty(neighbors) && continue
+        signal = @view m.spectra[ix, iy, p1:p2]
+        residual = Vector{Float64}(undef, n_ch)
+        for k in 1:n_ch
+            residual[k] = signal[k] - median(getindex.(neighbors, k))
+        end
+        mad_r = median(abs.(residual .- median(residual)))
+        if mad_r > eps(Float64)
+            push!(pixel_sigmas, mad_r / 0.6745)
+        end
+    end
+    noise_floor = isempty(pixel_sigmas) ? 0.0 : median(pixel_sigmas)
+
     for iy in 1:ny, ix in 1:nx
         neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
         isempty(neighbors) && continue
@@ -293,15 +312,26 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
             residual[k] = signal[k] - ref
         end
 
-        # Flag positive outliers using MAD-based scale
+        # Flag positive outliers using MAD-based scale with noise floor
         med_r = median(residual)
         mad_r = median(abs.(residual .- med_r))
         mad_r < eps(Float64) && continue
-        σ = mad_r / 0.6745
+        σ = max(mad_r / 0.6745, noise_floor)
 
+        n_flagged = 0
         for k in 1:n_ch
             if residual[k] - med_r > Float64(threshold) * σ
                 mask[ix, iy, k + p1 - 1] = true
+                n_flagged += 1
+            end
+        end
+
+        # Cosmic rays affect a handful of channels. If too many channels are
+        # flagged in one pixel, it's spatial spectral variation, not cosmic rays.
+        # Clear the flags for this pixel.
+        if n_flagged > n_ch ÷ 20  # > 5% of channels
+            for k in p1:p2
+                mask[ix, iy, k] = false
             end
         end
     end
