@@ -441,11 +441,16 @@ end
 """
     remove_cosmic_rays(m::PLMap, result::CosmicRayMapResult) -> PLMap
 
-Remove cosmic rays from a PLMap by replacing flagged voxels.
+Remove cosmic rays from a PLMap using scaled Most Similar Neighbor (MSN) replacement.
 
-For each flagged `(ix, iy, k)`: replaces with the median of `spectra[neighbors, k]`
-from non-flagged 4-connected spatial neighbors. Falls back to spectral interpolation
-(linear from nearest non-flagged channels) for edge pixels with no valid neighbors.
+For each affected pixel, finds the 4-connected neighbor with the highest Pearson
+correlation (the MSN). A scale factor is computed from non-flagged channels to match
+the pixel's intensity level. Flagged channels are then replaced with `scale × MSN[k]`.
+This preserves the pixel's overall intensity while removing only the spike shape,
+avoiding the dark-patch artifacts that raw neighbor median replacement produces.
+
+Falls back to spectral interpolation (1D linear from nearest non-flagged channels)
+for edge pixels with no spatial neighbors.
 
 Returns a new PLMap with recomputed intensity.
 
@@ -463,36 +468,50 @@ function remove_cosmic_rays(m::PLMap, result::CosmicRayMapResult)
     nx, ny, np = size(m.spectra)
     cleaned = copy(m.spectra)
 
-    for iy in 1:ny
-        for ix in 1:nx
-            for k in 1:np
-                result.mask[ix, iy, k] || continue
+    # Use same channel range as detection
+    pr = get(m.metadata, "pixel_range", nothing)
+    p1 = !isnothing(pr) ? max(1, Int(pr[1])) : 1
+    p2 = !isnothing(pr) ? min(np, Int(pr[2])) : np
+    n_ch = p2 - p1 + 1
 
-                # Collect valid neighbor values at channel k
-                neighbor_vals = Float64[]
-                if ix > 1 && !result.mask[ix-1, iy, k]
-                    push!(neighbor_vals, m.spectra[ix-1, iy, k])
-                end
-                if ix < nx && !result.mask[ix+1, iy, k]
-                    push!(neighbor_vals, m.spectra[ix+1, iy, k])
-                end
-                if iy > 1 && !result.mask[ix, iy-1, k]
-                    push!(neighbor_vals, m.spectra[ix, iy-1, k])
-                end
-                if iy < ny && !result.mask[ix, iy+1, k]
-                    push!(neighbor_vals, m.spectra[ix, iy+1, k])
-                end
+    for iy in 1:ny, ix in 1:nx
+        any(@view result.mask[ix, iy, :]) || continue
 
-                if !isempty(neighbor_vals)
-                    cleaned[ix, iy, k] = median(neighbor_vals)
-                else
-                    # Fallback: spectral interpolation from the mask
-                    flagged_channels = findall(@view result.mask[ix, iy, :])
-                    cr_1d = CosmicRayResult(flagged_channels, length(flagged_channels))
-                    signal = @view m.spectra[ix, iy, :]
-                    full_cleaned = remove_cosmic_rays(signal, cr_1d)
-                    cleaned[ix, iy, k] = full_cleaned[k]
-                end
+        # Find the Most Similar Neighbor (MSN) for this pixel
+        neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
+
+        if isempty(neighbors)
+            # Edge case: no neighbors — fall back to spectral interpolation
+            flagged_channels = findall(@view result.mask[ix, iy, :])
+            cr_1d = CosmicRayResult(flagged_channels, length(flagged_channels))
+            signal = @view m.spectra[ix, iy, :]
+            interp = remove_cosmic_rays(signal, cr_1d)
+            for ch in flagged_channels
+                cleaned[ix, iy, ch] = interp[ch]
+            end
+            continue
+        end
+
+        signal = @view m.spectra[ix, iy, p1:p2]
+        best_idx, _ = _most_similar_neighbor(signal, neighbors)
+        msn = neighbors[best_idx]
+
+        # Compute scale factor from non-flagged channels so the replacement
+        # preserves this pixel's intensity level (Whitaker & Hayes method).
+        sig_sum = 0.0
+        msn_sum = 0.0
+        for k in 1:n_ch
+            if !result.mask[ix, iy, k + p1 - 1]
+                sig_sum += signal[k]
+                msn_sum += msn[k]
+            end
+        end
+        scale = msn_sum > eps(Float64) ? sig_sum / msn_sum : 1.0
+
+        # Replace flagged channels with scaled MSN values
+        for k in 1:n_ch
+            if result.mask[ix, iy, k + p1 - 1]
+                cleaned[ix, iy, k + p1 - 1] = scale * msn[k]
             end
         end
     end
@@ -500,8 +519,8 @@ function remove_cosmic_rays(m::PLMap, result::CosmicRayMapResult)
     # Recompute intensity
     pixel_range = get(m.metadata, "pixel_range", nothing)
     if !isnothing(pixel_range)
-        p1, p2 = pixel_range
-        new_intensity = dropdims(sum(cleaned[:, :, p1:p2]; dims=3); dims=3)
+        rp1, rp2 = pixel_range
+        new_intensity = dropdims(sum(cleaned[:, :, Int(rp1):Int(rp2)]; dims=3); dims=3)
     else
         new_intensity = dropdims(sum(cleaned; dims=3); dims=3)
     end
