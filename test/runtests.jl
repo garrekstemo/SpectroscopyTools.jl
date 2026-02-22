@@ -1465,4 +1465,148 @@ Random.seed!(42)
         @test occursin("PLMap", String(take!(buf2)))
     end
 
+    @testset "Cosmic ray detection" begin
+
+        @testset "1D detection — synthetic spikes" begin
+            # Smooth Gaussian signal with 3 injected spikes
+            x = collect(1.0:100.0)
+            signal = @. 5.0 * exp(-((x - 50.0) / 15.0)^2) + 0.1
+
+            spike_positions = [20, 55, 80]
+            spiked = copy(signal)
+            for pos in spike_positions
+                spiked[pos] += 10.0 * maximum(signal)
+            end
+
+            result = detect_cosmic_rays(spiked; threshold=5.0)
+            @test result isa CosmicRayResult
+            @test result.count == 3
+            @test sort(result.indices) == spike_positions
+        end
+
+        @testset "1D detection — clean signal" begin
+            # Broad, smooth Gaussian — no features sharp enough to trigger detection
+            signal = [5.0 * exp(-((x - 100.0) / 40.0)^2) + 0.1 for x in 1.0:200.0]
+            result = detect_cosmic_rays(signal; threshold=5.0)
+            @test result.count == 0
+            @test isempty(result.indices)
+        end
+
+        @testset "1D detection — edge cases" begin
+            # Short signal (length < 3)
+            @test detect_cosmic_rays([1.0, 2.0]).count == 0
+
+            # All-zero signal (MAD ≈ 0)
+            @test detect_cosmic_rays(zeros(50)).count == 0
+
+            # Constant signal
+            @test detect_cosmic_rays(fill(42.0, 50)).count == 0
+        end
+
+        @testset "1D removal — interpolation" begin
+            x = collect(1.0:100.0)
+            original = @. 5.0 * exp(-((x - 50.0) / 15.0)^2) + 0.1
+
+            spiked = copy(original)
+            spiked[30] += 50.0
+            spiked[70] += 50.0
+
+            result = detect_cosmic_rays(spiked; threshold=5.0)
+            cleaned = remove_cosmic_rays(spiked, result)
+
+            @test length(cleaned) == length(original)
+            # Cleaned values should be close to original at spike positions
+            @test abs(cleaned[30] - original[30]) < 1.0
+            @test abs(cleaned[70] - original[70]) < 1.0
+            # Non-spike positions should be unchanged
+            @test cleaned[50] ≈ spiked[50]
+        end
+
+        @testset "1D removal — no spikes" begin
+            signal = collect(1.0:10.0)
+            result = CosmicRayResult(Int[], 0)
+            cleaned = remove_cosmic_rays(signal, result)
+            @test cleaned ≈ signal
+        end
+
+        @testset "PLMap detection — isolated spikes detected" begin
+            nx, ny, np = 5, 5, 100
+            spectra = zeros(nx, ny, np)
+            # Smooth background
+            for ix in 1:nx, iy in 1:ny, k in 1:np
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5
+            end
+
+            # Inject isolated spike at (3, 3, 25)
+            spectra[3, 3, 25] += 100.0
+
+            pixel = collect(1.0:np)
+            x = collect(1.0:nx)
+            y = collect(1.0:ny)
+            int_matrix = dropdims(sum(spectra; dims=3); dims=3)
+            meta = Dict{String,Any}("source_file" => "test", "pixel_range" => nothing)
+            m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+            cr = detect_cosmic_rays(m; threshold=5.0)
+            @test cr isa CosmicRayMapResult
+            @test cr.mask[3, 3, 25] == true
+            @test cr.count >= 1
+            @test cr.affected_spectra >= 1
+        end
+
+        @testset "PLMap detection — spatial validation unmarks shared features" begin
+            nx, ny, np = 5, 5, 100
+            spectra = zeros(nx, ny, np)
+            for ix in 1:nx, iy in 1:ny, k in 1:np
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5
+            end
+
+            # Inject a sharp feature at channel 60 across 3 adjacent pixels
+            # This should be unmarked by spatial validation (real feature)
+            for (ix, iy) in [(2, 3), (3, 3), (4, 3)]
+                spectra[ix, iy, 60] += 50.0
+            end
+
+            pixel = collect(1.0:np)
+            x = collect(1.0:nx)
+            y = collect(1.0:ny)
+            int_matrix = dropdims(sum(spectra; dims=3); dims=3)
+            meta = Dict{String,Any}("source_file" => "test", "pixel_range" => nothing)
+            m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+            cr = detect_cosmic_rays(m; threshold=5.0)
+            # Spatial validation should unmark the shared feature at channel 60
+            @test cr.mask[3, 3, 60] == false
+        end
+
+        @testset "PLMap removal — cleaned spectra match originals" begin
+            nx, ny, np = 5, 5, 100
+            spectra = zeros(nx, ny, np)
+            for ix in 1:nx, iy in 1:ny, k in 1:np
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5
+            end
+            original_spectra = copy(spectra)
+
+            # Inject isolated spike
+            spectra[2, 2, 30] += 100.0
+
+            pixel = collect(1.0:np)
+            x = collect(1.0:nx)
+            y = collect(1.0:ny)
+            int_matrix = dropdims(sum(spectra; dims=3); dims=3)
+            meta = Dict{String,Any}("source_file" => "test", "pixel_range" => nothing)
+            m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+            cr = detect_cosmic_rays(m; threshold=5.0)
+            cleaned = remove_cosmic_rays(m, cr)
+
+            @test cleaned isa PLMap
+            # Cleaned value at spike should be close to original
+            @test abs(cleaned.spectra[2, 2, 30] - original_spectra[2, 2, 30]) < 2.0
+            # Non-spike values should be unchanged
+            @test cleaned.spectra[1, 1, 50] ≈ spectra[1, 1, 50]
+        end
+
+    end
+
 end

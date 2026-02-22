@@ -32,6 +32,7 @@ include("peakfitting.jl")
 include("fitting.jl")
 include("chirp.jl")
 include("plmap.jl")
+include("cosmic_rays.jl")
 
 # ==========================================================================
 # Exports — Types & Interface
@@ -45,6 +46,7 @@ export delay, signal, wavenumber, wavelength
 # PL/Raman spatial mapping
 export PLMap, extract_spectrum, peak_centers, intensity
 export integrated_intensity, intensity_mask, fit_map, FitMapResult
+export CosmicRayResult, CosmicRayMapResult, detect_cosmic_rays, remove_cosmic_rays
 
 # ==========================================================================
 # Exports — Fit Results
