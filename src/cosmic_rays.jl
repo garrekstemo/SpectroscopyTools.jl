@@ -4,9 +4,13 @@
 # hitting the CCD detector. They appear as sharp, narrow spikes that don't
 # correlate with spatial neighbors.
 #
-# Algorithm: Whitaker-Hayes modified z-score on first differences.
-# For PLMap data, spatial validation removes false positives where
-# neighboring pixels share the same spectral feature.
+# 1D algorithm: Whitaker-Hayes modified z-score on first differences with
+# shoulder expansion for single spectra.
+#
+# PLMap algorithm: Nearest-neighbor comparison. Each pixel's spectrum is
+# compared to the median of its 4-connected spatial neighbors. Channels
+# where the residual is a significant positive outlier are flagged as
+# cosmic rays. Real features present in neighbors cancel in the residual.
 
 # =============================================================================
 # Result types
@@ -104,11 +108,53 @@ function detect_cosmic_rays(signal::AbstractVector; threshold::Real=5.0)
         end
     end
 
+    # Expand flagged regions to capture spike shoulders (CCD charge spread)
+    if !isempty(flagged)
+        _expand_to_shoulders!(flagged, signal, mad_val)
+    end
+
     indices = sort!(collect(flagged))
     # Clamp to valid range
     filter!(i -> 1 <= i <= n, indices)
 
     return CosmicRayResult(indices, length(indices))
+end
+
+"""
+    _expand_to_shoulders!(flagged, signal, mad_val; factor=3.0)
+
+Expand flagged regions outward to capture shoulder channels where CCD charge
+has spread from the cosmic ray peak. A candidate neighbor is included if it
+is elevated above the nearest non-flagged reference channel by more than
+`factor × σ`, where σ is estimated from the MAD of first differences.
+"""
+function _expand_to_shoulders!(flagged::Set{Int}, signal::AbstractVector, mad_val::Real;
+                               factor::Real=3.0)
+    n = length(signal)
+    noise_est = mad_val / 0.6745  # MAD → σ estimate
+
+    changed = true
+    while changed
+        changed = false
+        for idx in collect(flagged)
+            for nb in (idx - 1, idx + 1)
+                (1 <= nb <= n && !(nb in flagged)) || continue
+
+                # Find nearest non-flagged channel on the outward side
+                step = nb < idx ? -1 : 1
+                ref = nb + step
+                while 1 <= ref <= n && ref in flagged
+                    ref += step
+                end
+                (1 <= ref <= n) || continue
+
+                if signal[nb] - signal[ref] > factor * noise_est
+                    push!(flagged, nb)
+                    changed = true
+                end
+            end
+        end
+    end
 end
 
 """
@@ -167,18 +213,47 @@ end
 # =============================================================================
 
 """
+    _neighbor_spectra(spectra, ix, iy, nx, ny, p1, p2)
+
+Collect spectral slices from 4-connected spatial neighbors of `(ix, iy)`,
+restricted to channels `p1:p2`. Returns a vector of views (one per neighbor).
+"""
+function _neighbor_spectra(spectra::AbstractArray{<:Any,3}, ix::Int, iy::Int,
+                           nx::Int, ny::Int, p1::Int, p2::Int)
+    neighbors = typeof(@view spectra[1, 1, p1:p2])[]
+    if ix > 1
+        push!(neighbors, @view spectra[ix-1, iy, p1:p2])
+    end
+    if ix < nx
+        push!(neighbors, @view spectra[ix+1, iy, p1:p2])
+    end
+    if iy > 1
+        push!(neighbors, @view spectra[ix, iy-1, p1:p2])
+    end
+    if iy < ny
+        push!(neighbors, @view spectra[ix, iy+1, p1:p2])
+    end
+    return neighbors
+end
+
+"""
     detect_cosmic_rays(m::PLMap; threshold=5.0, pixel_range=nothing) -> CosmicRayMapResult
 
-Detect cosmic ray spikes across all spectra in a PLMap.
+Detect cosmic ray spikes across all spectra in a PLMap using nearest-neighbor
+comparison.
 
-Runs 1D detection on each spatial pixel's spectrum, then applies spatial
-validation: if a flagged channel `k` at position `(ix, iy)` is also flagged
-at the same channel in 2 or more 4-connected spatial neighbors, it is unmarked
-as a real spectral feature rather than a cosmic ray.
+For each pixel, computes a reference spectrum as the median of its 4-connected
+spatial neighbors at each channel. The residual (pixel minus reference) is then
+tested for positive outliers using the MAD-based robust scale estimate. Channels
+where the residual exceeds `threshold × σ` above the median residual are flagged.
+
+This approach captures the full cosmic ray spike including shoulders, because
+any channel elevated above the spatial neighborhood is detected. Real spectral
+features present in neighbors cancel in the residual and are not flagged.
 
 # Arguments
 - `m`: PLMap with 3D spectra array `(nx, ny, n_pixel)`
-- `threshold`: z-score cutoff (default 5.0)
+- `threshold`: outlier cutoff in MAD-scaled units (default 5.0)
 - `pixel_range`: `(start, stop)` channel indices to analyze. When set, only
   this subrange of each spectrum is checked for cosmic rays. Channels outside
   the range are never flagged. Defaults to the `pixel_range` in `m.metadata`,
@@ -203,60 +278,31 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
     p1 = !isnothing(pr) ? max(1, Int(pr[1])) : 1
     p2 = !isnothing(pr) ? min(np, Int(pr[2])) : np
 
-    # Step 1: Run 1D detection on each spatial pixel (within pixel_range only)
-    for iy in 1:ny
-        for ix in 1:nx
-            signal = @view m.spectra[ix, iy, p1:p2]
-            cr = detect_cosmic_rays(signal; threshold=Float64(threshold))
-            for k in cr.indices
-                mask[ix, iy, k + p1 - 1] = true  # offset back to full-spectrum index
+    n_ch = p2 - p1 + 1
+
+    for iy in 1:ny, ix in 1:nx
+        neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
+        isempty(neighbors) && continue
+
+        signal = @view m.spectra[ix, iy, p1:p2]
+
+        # Residual: pixel minus median of neighbor spectra at each channel
+        residual = Vector{Float64}(undef, n_ch)
+        for k in 1:n_ch
+            ref = median(getindex.(neighbors, k))
+            residual[k] = signal[k] - ref
+        end
+
+        # Flag positive outliers using MAD-based scale
+        med_r = median(residual)
+        mad_r = median(abs.(residual .- med_r))
+        mad_r < eps(Float64) && continue
+        σ = mad_r / 0.6745
+
+        for k in 1:n_ch
+            if residual[k] - med_r > Float64(threshold) * σ
+                mask[ix, iy, k + p1 - 1] = true
             end
-        end
-    end
-
-    # Step 2: Spatial validation — unmark if ≥2 neighbors also flagged at same channel
-    # 4-connected neighbors: (ix±1, iy), (ix, iy±1)
-    to_unmark = Tuple{Int,Int,Int}[]
-    for iy in 1:ny
-        for ix in 1:nx
-            for k in 1:np
-                mask[ix, iy, k] || continue
-
-                neighbor_count = 0
-                if ix > 1 && mask[ix-1, iy, k]
-                    neighbor_count += 1
-                end
-                if ix < nx && mask[ix+1, iy, k]
-                    neighbor_count += 1
-                end
-                if iy > 1 && mask[ix, iy-1, k]
-                    neighbor_count += 1
-                end
-                if iy < ny && mask[ix, iy+1, k]
-                    neighbor_count += 1
-                end
-
-                if neighbor_count >= 2
-                    push!(to_unmark, (ix, iy, k))
-                end
-            end
-        end
-    end
-
-    for (ix, iy, k) in to_unmark
-        mask[ix, iy, k] = false
-        # Also unmark the neighbors at the same channel (they're part of the same feature)
-        if ix > 1 && mask[ix-1, iy, k]
-            mask[ix-1, iy, k] = false
-        end
-        if ix < nx && mask[ix+1, iy, k]
-            mask[ix+1, iy, k] = false
-        end
-        if iy > 1 && mask[ix, iy-1, k]
-            mask[ix, iy-1, k] = false
-        end
-        if iy < ny && mask[ix, iy+1, k]
-            mask[ix, iy+1, k] = false
         end
     end
 

@@ -1484,6 +1484,25 @@ Random.seed!(42)
             @test sort(result.indices) == spike_positions
         end
 
+        @testset "1D detection — captures spike shoulders" begin
+            # Spike with CCD charge spread: peak plus elevated shoulders
+            # Noise is needed for a realistic MAD estimate (flat signal → MAD ≈ 0)
+            signal = fill(100.0, 100) .+ 0.5 .* randn(100)
+            signal[48] += 20.0   # left shoulder
+            signal[49] += 100.0  # left flank
+            signal[50] += 400.0  # peak
+            signal[51] += 200.0  # right flank
+            signal[52] += 15.0   # right shoulder
+
+            result = detect_cosmic_rays(signal; threshold=5.0)
+            # Should catch the peak and shoulders, not just the peak
+            @test result.count >= 4
+            @test 50 in result.indices  # peak
+            @test 49 in result.indices  # left flank
+            @test 51 in result.indices  # right flank
+            @test 48 in result.indices  # left shoulder
+        end
+
         @testset "1D detection — clean signal" begin
             # Broad, smooth Gaussian — no features sharp enough to trigger detection
             signal = [5.0 * exp(-((x - 100.0) / 40.0)^2) + 0.1 for x in 1.0:200.0]
@@ -1532,9 +1551,8 @@ Random.seed!(42)
         @testset "PLMap detection — isolated spikes detected" begin
             nx, ny, np = 5, 5, 100
             spectra = zeros(nx, ny, np)
-            # Smooth background
             for ix in 1:nx, iy in 1:ny, k in 1:np
-                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5 + 0.1 * randn()
             end
 
             # Inject isolated spike at (3, 3, 25)
@@ -1554,16 +1572,16 @@ Random.seed!(42)
             @test cr.affected_spectra >= 1
         end
 
-        @testset "PLMap detection — spatial validation unmarks shared features" begin
+        @testset "PLMap detection — shared features not flagged" begin
             nx, ny, np = 5, 5, 100
             spectra = zeros(nx, ny, np)
             for ix in 1:nx, iy in 1:ny, k in 1:np
-                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5 + 0.1 * randn()
             end
 
-            # Inject a sharp feature at channel 60 across 3 adjacent pixels
-            # This should be unmarked by spatial validation (real feature)
-            for (ix, iy) in [(2, 3), (3, 3), (4, 3)]
+            # Inject a sharp feature at channel 60 across a 3×3 block
+            # All 4 neighbors of (3,3) share the feature → residual ≈ 0 → not flagged
+            for ix in 2:4, iy in 2:4
                 spectra[ix, iy, 60] += 50.0
             end
 
@@ -1575,15 +1593,68 @@ Random.seed!(42)
             m = PLMap(int_matrix, spectra, x, y, pixel, meta)
 
             cr = detect_cosmic_rays(m; threshold=5.0)
-            # Spatial validation should unmark the shared feature at channel 60
+            # All 4 neighbors of (3,3) have the feature → median reference ≈ feature value
+            # → residual at channel 60 ≈ 0 → not flagged
             @test cr.mask[3, 3, 60] == false
+        end
+
+        @testset "PLMap detection — wide spike with shoulders" begin
+            nx, ny, np = 5, 5, 100
+            spectra = zeros(nx, ny, np)
+            for ix in 1:nx, iy in 1:ny, k in 1:np
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5 + 0.1 * randn()
+            end
+
+            # Inject a wide spike with shoulders at (3, 3)
+            spectra[3, 3, 48] += 15.0   # left shoulder
+            spectra[3, 3, 49] += 40.0   # left flank
+            spectra[3, 3, 50] += 100.0  # peak
+            spectra[3, 3, 51] += 60.0   # right flank
+            spectra[3, 3, 52] += 10.0   # right shoulder
+
+            pixel = collect(1.0:np)
+            x = collect(1.0:nx)
+            y = collect(1.0:ny)
+            int_matrix = dropdims(sum(spectra; dims=3); dims=3)
+            meta = Dict{String,Any}("source_file" => "test", "pixel_range" => nothing)
+            m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+            cr = detect_cosmic_rays(m; threshold=5.0)
+            # All channels of the wide spike should be caught
+            @test cr.mask[3, 3, 50] == true  # peak
+            @test cr.mask[3, 3, 49] == true  # left flank
+            @test cr.mask[3, 3, 51] == true  # right flank
+            @test cr.mask[3, 3, 48] == true  # left shoulder
+            @test cr.mask[3, 3, 52] == true  # right shoulder
+        end
+
+        @testset "PLMap detection — edge pixel" begin
+            nx, ny, np = 5, 5, 100
+            spectra = zeros(nx, ny, np)
+            for ix in 1:nx, iy in 1:ny, k in 1:np
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5 + 0.1 * randn()
+            end
+
+            # Inject spike at corner pixel (1, 1) — only 2 neighbors
+            spectra[1, 1, 30] += 100.0
+
+            pixel = collect(1.0:np)
+            x = collect(1.0:nx)
+            y = collect(1.0:ny)
+            int_matrix = dropdims(sum(spectra; dims=3); dims=3)
+            meta = Dict{String,Any}("source_file" => "test", "pixel_range" => nothing)
+            m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+            cr = detect_cosmic_rays(m; threshold=5.0)
+            @test cr.mask[1, 1, 30] == true
+            @test cr.count >= 1
         end
 
         @testset "PLMap removal — cleaned spectra match originals" begin
             nx, ny, np = 5, 5, 100
             spectra = zeros(nx, ny, np)
             for ix in 1:nx, iy in 1:ny, k in 1:np
-                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5
+                spectra[ix, iy, k] = 2.0 * exp(-((k - 50)^2) / 200.0) + 0.5 + 0.1 * randn()
             end
             original_spectra = copy(spectra)
 
@@ -1601,7 +1672,7 @@ Random.seed!(42)
             cleaned = remove_cosmic_rays(m, cr)
 
             @test cleaned isa PLMap
-            # Cleaned value at spike should be close to original
+            # Cleaned value at spike should be close to original (within noise + interpolation)
             @test abs(cleaned.spectra[2, 2, 30] - original_spectra[2, 2, 30]) < 2.0
             # Non-spike values should be unchanged
             @test cleaned.spectra[1, 1, 50] ≈ spectra[1, 1, 50]

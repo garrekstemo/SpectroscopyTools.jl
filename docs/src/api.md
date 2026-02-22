@@ -31,6 +31,15 @@ svd_filter
 singular_values
 ```
 
+## Cosmic Ray Detection
+
+```@docs
+CosmicRayResult
+CosmicRayMapResult
+detect_cosmic_rays
+remove_cosmic_rays
+```
+
 ## PL / Raman Mapping
 
 ```@docs
