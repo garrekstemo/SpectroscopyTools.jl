@@ -201,6 +201,17 @@ function fit_peaks(x::AbstractVector, y::AbstractVector;
     p_err = stderror(sol)
     ci_vals = confint(sol)
 
+    # Width parameters (index 3 per peak) must be non-negative.
+    # Models are symmetric in width, so abs() gives the identical curve.
+    for i in 1:n_peaks
+        wi = (i - 1) * npp + 3
+        if p[wi] < 0
+            p[wi] = -p[wi]
+            lo, hi = ci_vals[wi]
+            ci_vals[wi] = (-hi, -lo)
+        end
+    end
+
     ss_res = rss(sol)
     ss_tot = sum((y_f .- mean(y_f)).^2)
     r_squared = ss_tot > 0 ? 1 - ss_res / ss_tot : 0.0
