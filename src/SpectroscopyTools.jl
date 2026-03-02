@@ -87,6 +87,9 @@ export correct_baseline
 export normalize, normalize_intensity, subtract_spectrum
 export smooth_data, calc_fwhm
 export transmittance_to_absorbance, absorbance_to_transmittance
+export savitzky_golay_smooth, derivative
+export band_area, normalize_area, normalize_to_peak
+export estimate_snr
 
 # ==========================================================================
 # Exports — Unit conversions

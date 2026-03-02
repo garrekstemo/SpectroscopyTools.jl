@@ -1680,4 +1680,151 @@ Random.seed!(42)
 
     end
 
+    @testset "Spectral Math" begin
+
+        @testset "savitzky_golay_smooth" begin
+            # Smoothing reduces noise on a sine wave
+            x_sg = collect(0:0.1:2π)
+            y_clean = sin.(x_sg)
+            y_noisy = y_clean .+ 0.1 * randn(length(x_sg))
+            y_smooth = savitzky_golay_smooth(y_noisy; window=11, order=3)
+            @test length(y_smooth) == length(y_noisy)
+            # Smoothed MSE should be lower than noisy MSE
+            mse_noisy = sum((y_noisy .- y_clean).^2) / length(y_clean)
+            mse_smooth = sum((y_smooth .- y_clean).^2) / length(y_clean)
+            @test mse_smooth < mse_noisy
+            # Default parameters work
+            y_default = savitzky_golay_smooth(y_noisy)
+            @test length(y_default) == length(y_noisy)
+        end
+
+        @testset "derivative" begin
+            # 1st derivative of Gaussian: zero-crossing near peak center
+            x_d = collect(400.0:0.5:800.0)
+            center = 520.0
+            sigma = 20.0
+            y_gauss = @. 100 * exp(-(x_d - center)^2 / (2 * sigma^2))
+
+            # y-only derivative (unit spacing)
+            dy_unit = derivative(y_gauss; order=1, window=11, poly_order=3)
+            @test length(dy_unit) == length(y_gauss)
+
+            # x,y derivative (correctly scaled)
+            dy = derivative(x_d, y_gauss; order=1, window=11, poly_order=3)
+            @test length(dy) == length(y_gauss)
+
+            # Zero-crossing should be near the peak center
+            # Find where derivative crosses zero (sign change)
+            center_idx = argmin(abs.(x_d .- center))
+            # derivative should be positive before peak, negative after
+            @test dy[center_idx - 20] > 0  # before peak
+            @test dy[center_idx + 20] < 0  # after peak
+            # Near zero at peak
+            @test abs(dy[center_idx]) < maximum(abs.(dy)) * 0.1
+
+            # 2nd derivative: negative at peak center (concave down)
+            d2y = derivative(x_d, y_gauss; order=2, window=11, poly_order=3)
+            @test d2y[center_idx] < 0
+        end
+
+        @testset "band_area" begin
+            # Gaussian with known analytical area
+            x_ba = collect(400.0:0.5:800.0)
+            A = 100.0
+            sigma = 10.0
+            center_ba = 520.0
+            y_ba = @. A * exp(-(x_ba - center_ba)^2 / (2 * sigma^2))
+
+            # Analytical area of full Gaussian = A * σ * √(2π)
+            expected_area = A * sigma * sqrt(2π)
+            computed_area = band_area(x_ba, y_ba, 400.0, 800.0)
+            @test abs(computed_area - expected_area) / expected_area < 0.01  # Within 1%
+
+            # Partial range
+            partial_area = band_area(x_ba, y_ba, 490.0, 550.0)
+            @test partial_area > 0
+            @test partial_area < computed_area
+
+            # Swapped bounds should also work (minmax)
+            swapped = band_area(x_ba, y_ba, 800.0, 400.0)
+            @test abs(swapped - computed_area) < 1e-10
+
+            # Edge case: fewer than 2 points
+            @test_throws ArgumentError band_area(x_ba, y_ba, 399.0, 399.5)
+        end
+
+        @testset "normalize_area" begin
+            # Uniform signal: area of y=1 on [1,10] is 9
+            x_na = collect(1.0:0.1:10.0)
+            y_na = ones(length(x_na))
+            y_norm = normalize_area(x_na, y_na)
+            @test length(y_norm) == length(y_na)
+            # Total area after normalization should be ≈ 1.0
+            total_after = band_area(x_na, y_norm, x_na[1], x_na[end])
+            @test abs(total_after - 1.0) < 1e-10
+
+            # Ratios preserved
+            x_peak = collect(400.0:1.0:800.0)
+            y_peak = @. 50 * exp(-(x_peak - 520)^2 / (2 * 10^2)) + 10 * exp(-(x_peak - 620)^2 / (2 * 8^2))
+            y_pn = normalize_area(x_peak, y_peak)
+            # Check ratio of two points is preserved
+            i1, i2 = 50, 150
+            @test abs(y_pn[i1] / y_pn[i2] - y_peak[i1] / y_peak[i2]) < 1e-10
+        end
+
+        @testset "normalize_to_peak" begin
+            # Peak at x=520 with amplitude 50
+            x_np = collect(400.0:1.0:800.0)
+            y_np = @. 50 * exp(-(x_np - 520)^2 / (2 * 10^2))
+            y_norm = normalize_to_peak(x_np, y_np, 520.0)
+
+            # Value at peak position should be 1.0
+            peak_idx = argmin(abs.(x_np .- 520.0))
+            @test abs(y_norm[peak_idx] - 1.0) < 1e-10
+
+            # Ratios preserved
+            @test abs(y_norm[1] / y_norm[peak_idx] - y_np[1] / y_np[peak_idx]) < 1e-10
+
+            # Within tolerance
+            y_tol = normalize_to_peak(x_np, y_np, 520.3; tolerance=1.0)
+            @test abs(y_tol[peak_idx] - 1.0) < 1e-10
+
+            # Outside tolerance throws error
+            @test_throws ArgumentError normalize_to_peak(x_np, y_np, 999.0; tolerance=5.0)
+
+            # Zero intensity at peak throws error
+            y_zero = zeros(length(x_np))
+            @test_throws ArgumentError normalize_to_peak(x_np, y_zero, 520.0)
+        end
+
+        @testset "estimate_snr" begin
+            # High SNR: clean signal + small noise
+            using Random
+            Random.seed!(42)
+            y_signal = 100.0 * ones(200)
+            y_noisy_snr = y_signal .+ 2.0 * randn(200)
+            result = estimate_snr(y_noisy_snr)
+            @test result isa NamedTuple
+            @test haskey(result, :snr)
+            @test haskey(result, :signal)
+            @test haskey(result, :noise)
+            @test result.snr > 10  # SNR should be high
+            @test result.signal > 0
+            @test result.noise > 0
+
+            # Very noisy signal should have lower SNR
+            y_very_noisy = y_signal .+ 50.0 * randn(200)
+            result_noisy = estimate_snr(y_very_noisy)
+            @test result_noisy.snr < result.snr
+
+            # Edge case: too few points
+            @test_throws ArgumentError estimate_snr([1.0, 2.0, 3.0])
+
+            # Exactly 4 points should work
+            result_4 = estimate_snr([1.0, 2.0, 3.0, 4.0])
+            @test result_4 isa NamedTuple
+        end
+
+    end  # Spectral Math
+
 end

@@ -331,7 +331,9 @@ export correct_baseline
 
 # Spectroscopy Utilities
 export normalize, subtract_spectrum
-export smooth_data, calc_fwhm
+export smooth_data, savitzky_golay_smooth, derivative, calc_fwhm
+export band_area, normalize_area, normalize_to_peak
+export estimate_snr
 export transmittance_to_absorbance, absorbance_to_transmittance
 
 # Units
@@ -376,6 +378,9 @@ transmittance_to_absorbance, absorbance_to_transmittance
 subtract_spectrum, correct_baseline
 xdata, ydata, xlabel, ylabel, source_file
 normalize
+savitzky_golay_smooth, derivative
+band_area, normalize_area, normalize_to_peak
+estimate_snr
 ```
 
 ### Functions QPS Re-exports via `import` (no extension)
@@ -393,7 +398,7 @@ subtract_background, save_chirp, load_chirp
 ## Pre-Registration Checklist
 
 - [x] Package loads: `using SpectroscopyTools`
-- [x] All tests pass: `Pkg.test("SpectroscopyTools")` (391 tests)
+- [x] All tests pass: `Pkg.test("SpectroscopyTools")` (495 tests)
 - [x] Docs structure (make.jl, index.md, api.md, tutorials)
 - [x] Docs build and deploy (CI)
 - [x] CI workflow exists (.github/workflows/CI.yml)
