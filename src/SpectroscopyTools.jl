@@ -27,6 +27,7 @@ include("types.jl")
 include("units.jl")
 include("spectroscopy.jl")
 include("baseline.jl")
+include("transforms.jl")
 include("peakdetection.jl")
 include("peakfitting.jl")
 include("fitting.jl")
@@ -78,7 +79,7 @@ export PeakInfo, find_peaks, peak_table
 # ==========================================================================
 # Exports — Baseline correction
 # ==========================================================================
-export als_baseline, arpls_baseline, snip_baseline
+export als_baseline, arpls_baseline, snip_baseline, rubberband_baseline
 export correct_baseline
 
 # ==========================================================================
@@ -90,6 +91,13 @@ export transmittance_to_absorbance, absorbance_to_transmittance
 export savitzky_golay_smooth, derivative
 export band_area, normalize_area, normalize_to_peak
 export estimate_snr
+# Spectral arithmetic
+export add_spectra, divide_spectra, multiply_spectrum, average_spectra
+export interpolate_spectrum
+# Transforms
+export kramers_kronig, kubelka_munk, tauc_plot
+export reflectance_to_absorbance, snv, beer_lambert
+export urbach_tail, thickness_from_fringes
 
 # ==========================================================================
 # Exports — Unit conversions
@@ -108,5 +116,6 @@ export coef, residuals, predict, fitted, stderror, confint, rss, mse, nobs, isco
 # Re-exports from CurveFitModels.jl
 # ==========================================================================
 export gaussian, lorentzian, pseudo_voigt, single_exponential
+export fano, voigt, log_normal
 
 end # module SpectroscopyTools

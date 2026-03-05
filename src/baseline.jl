@@ -159,6 +159,57 @@ function _lls_inverse!(z::Vector{Float64})
 end
 
 # =============================================================================
+# Rubber band baseline
+# =============================================================================
+
+"""
+    rubberband_baseline(x, y)
+
+Rubber band baseline correction using the lower convex hull.
+
+Equivalent to stretching a rubber band under the spectrum -- the baseline
+follows the lower envelope. Used in OPUS for FTIR baseline correction.
+
+Returns the baseline y-values (same length as input).
+"""
+function rubberband_baseline(x::AbstractVector, y::AbstractVector)
+    n = length(x)
+    n == length(y) || throw(ArgumentError("x and y must have the same length"))
+    n >= 2 || throw(ArgumentError("Need at least 2 points"))
+
+    xv = Float64.(x)
+    yv = Float64.(y)
+
+    # Compute lower convex hull indices using Andrew's monotone chain
+    # We want the lower hull of points (x[i], y[i])
+    # Sort by x, then build lower hull
+    order = sortperm(xv)
+    hull = Int[]  # indices into the original arrays (via order)
+
+    for idx in order
+        while length(hull) >= 2
+            h1 = hull[end-1]
+            h2 = hull[end]
+            # Cross product to check left turn (lower hull wants right turns)
+            cross = (xv[h2] - xv[h1]) * (yv[idx] - yv[h1]) -
+                    (yv[h2] - yv[h1]) * (xv[idx] - xv[h1])
+            if cross <= 0
+                pop!(hull)
+            else
+                break
+            end
+        end
+        push!(hull, idx)
+    end
+
+    # Interpolate hull back to original x-grid
+    hull_x = xv[hull]
+    hull_y = yv[hull]
+    itp = Interpolations.linear_interpolation(hull_x, hull_y, extrapolation_bc=Interpolations.Flat())
+    return itp.(xv)
+end
+
+# =============================================================================
 # Unified API
 # =============================================================================
 
@@ -178,8 +229,11 @@ function correct_baseline(y::AbstractVector{<:Real};
         arpls_baseline(y; kwargs...)
     elseif method == :snip
         snip_baseline(y; kwargs...)
+    elseif method == :rubberband
+        # rubberband_baseline needs x-values; create a dummy index grid
+        rubberband_baseline(collect(1.0:length(y)), y)
     else
-        available = (:als, :arpls, :snip)
+        available = (:als, :arpls, :snip, :rubberband)
         throw(ArgumentError("Unknown method :$method. Available: $available"))
     end
 

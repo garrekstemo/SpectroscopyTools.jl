@@ -67,49 +67,8 @@ or any objects with `.x` and `.y` fields.
 Returns `(x=..., y=...)` NamedTuple.
 """
 function subtract_spectrum(sample, reference; scale::Real=1.0, interpolate=false)
-    if !interpolate
-        if length(sample.x) != length(reference.x)
-            error("""
-                  Grid mismatch: sample has $(length(sample.x)) points, reference has $(length(reference.x)).
-
-                  Use `interpolate=true` to interpolate the reference onto the sample grid:
-                      subtract_spectrum(sample, reference, interpolate=true)
-                  """)
-        end
-
-        max_diff = maximum(abs.(sample.x .- reference.x))
-        if max_diff > 0.01
-            error("""
-                  Grid mismatch: x-values differ by up to $(round(max_diff, digits=3)) cm⁻¹.
-
-                  Use `interpolate=true` to interpolate the reference onto the sample grid:
-                      subtract_spectrum(sample, reference, interpolate=true)
-                  """)
-        end
-    end
-
-    if interpolate
-        ref_interp = similar(sample.y)
-        for i in eachindex(sample.x)
-            x_target = sample.x[i]
-            idx = searchsortedfirst(reference.x, x_target)
-            if idx == 1
-                ref_interp[i] = reference.y[1]
-            elseif idx > length(reference.x)
-                ref_interp[i] = reference.y[end]
-            else
-                x1, x2 = reference.x[idx-1], reference.x[idx]
-                y1, y2 = reference.y[idx-1], reference.y[idx]
-                t = (x_target - x1) / (x2 - x1)
-                ref_interp[i] = y1 + t * (y2 - y1)
-            end
-        end
-        y_subtracted = sample.y .- scale .* ref_interp
-    else
-        y_subtracted = sample.y .- scale .* reference.y
-    end
-
-    return (x=sample.x, y=y_subtracted)
+    a_y, b_y = _align_spectra((x=sample.x, y=sample.y), (x=reference.x, y=reference.y); interpolate)
+    return (x=collect(sample.x), y=a_y .- scale .* b_y)
 end
 
 # Typed dispatch: AbstractSpectroscopyData → xdata/ydata interface
@@ -392,4 +351,101 @@ function estimate_snr(y::AbstractVector{<:Real})
     signal = median(y)
     snr = noise > 0 ? signal / noise : Inf
     return (snr=snr, signal=signal, noise=noise)
+end
+
+# ============================================================================
+# SPECTRAL ARITHMETIC
+# ============================================================================
+
+"""
+    _align_spectra(a, b; interpolate=false)
+
+Internal helper: return `(a_y, b_y)` on a common x-grid.
+If `interpolate=true`, resamples `b` onto `a.x` using linear interpolation.
+Otherwise, validates that grids match.
+"""
+function _align_spectra(a, b; interpolate=false)
+    if interpolate
+        xs = issorted(b.x) ? collect(b.x) : reverse(collect(b.x))
+        ys = issorted(b.x) ? collect(b.y) : reverse(collect(b.y))
+        itp = Interpolations.linear_interpolation(xs, ys, extrapolation_bc=Interpolations.Flat())
+        return (collect(a.y), itp.(a.x))
+    end
+    length(a.x) == length(b.x) || error(
+        "Grid mismatch: $(length(a.x)) vs $(length(b.x)) points. Use interpolate=true.")
+    max_diff = maximum(abs.(collect(a.x) .- collect(b.x)))
+    max_diff <= 0.01 || error(
+        "Grid mismatch: x-values differ by up to $(round(max_diff, digits=3)). Use interpolate=true.")
+    return (collect(a.y), collect(b.y))
+end
+
+"""
+    add_spectra(a, b; interpolate=false)
+
+Add two spectra element-wise. Returns `(x=a.x, y=a.y + b.y)`.
+"""
+function add_spectra(a, b; interpolate=false)
+    a_y, b_y = _align_spectra(a, b; interpolate)
+    return (x=collect(a.x), y=a_y .+ b_y)
+end
+
+"""
+    divide_spectra(a, b; interpolate=false)
+
+Divide spectrum `a` by spectrum `b` element-wise. Returns `(x=a.x, y=a.y / b.y)`.
+"""
+function divide_spectra(a, b; interpolate=false)
+    a_y, b_y = _align_spectra(a, b; interpolate)
+    return (x=collect(a.x), y=a_y ./ b_y)
+end
+
+"""
+    multiply_spectrum(spec, factor::Real)
+
+Scale a spectrum by a constant factor. Returns `(x=spec.x, y=spec.y * factor)`.
+"""
+function multiply_spectrum(spec, factor::Real)
+    return (x=collect(spec.x), y=collect(spec.y) .* factor)
+end
+
+"""
+    average_spectra(specs...; interpolate=false)
+
+Compute the point-wise average of multiple spectra. All spectra are
+aligned to the x-grid of the first spectrum.
+"""
+function average_spectra(specs...; interpolate=false)
+    first_spec = specs[1]
+    n = length(specs)
+    sum_y = collect(Float64.(first_spec.y))
+    for i in 2:n
+        _, b_y = _align_spectra(first_spec, specs[i]; interpolate)
+        sum_y .+= b_y
+    end
+    return (x=collect(first_spec.x), y=sum_y ./ n)
+end
+
+"""
+    interpolate_spectrum(x, y, new_x)
+
+Resample a spectrum onto a new x-grid using linear interpolation.
+"""
+function interpolate_spectrum(x, y, new_x)
+    xs = issorted(x) ? collect(x) : reverse(collect(x))
+    ys = issorted(x) ? collect(y) : reverse(collect(y))
+    itp = Interpolations.linear_interpolation(xs, ys, extrapolation_bc=Interpolations.Flat())
+    return itp.(new_x)
+end
+
+# Typed dispatches for AbstractSpectroscopyData
+function add_spectra(a::AbstractSpectroscopyData, b::AbstractSpectroscopyData; kwargs...)
+    add_spectra((x=xdata(a), y=ydata(a)), (x=xdata(b), y=ydata(b)); kwargs...)
+end
+
+function divide_spectra(a::AbstractSpectroscopyData, b::AbstractSpectroscopyData; kwargs...)
+    divide_spectra((x=xdata(a), y=ydata(a)), (x=xdata(b), y=ydata(b)); kwargs...)
+end
+
+function multiply_spectrum(spec::AbstractSpectroscopyData, factor::Real)
+    multiply_spectrum((x=xdata(spec), y=ydata(spec)), factor)
 end

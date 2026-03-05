@@ -1827,4 +1827,151 @@ Random.seed!(42)
 
     end  # Spectral Math
 
+    @testset "Spectral Arithmetic" begin
+        x = collect(1.0:0.5:10.0)
+        y1 = @. sin(x)
+        y2 = @. cos(x)
+        a = (x=x, y=y1)
+        b = (x=x, y=y2)
+
+        @testset "add_spectra" begin
+            result = add_spectra(a, b)
+            @test result.x == x
+            @test result.y ≈ y1 .+ y2
+        end
+
+        @testset "divide_spectra" begin
+            c = (x=x, y=ones(length(x)) .* 2.0)
+            result = divide_spectra(a, c)
+            @test result.y ≈ y1 ./ 2.0
+        end
+
+        @testset "multiply_spectrum" begin
+            result = multiply_spectrum(a, 3.0)
+            @test result.y ≈ y1 .* 3.0
+        end
+
+        @testset "average_spectra" begin
+            result = average_spectra(a, b)
+            @test result.y ≈ (y1 .+ y2) ./ 2
+        end
+
+        @testset "interpolate_spectrum" begin
+            new_x = [2.0, 5.0, 8.0]
+            result = interpolate_spectrum(x, y1, new_x)
+            @test length(result) == 3
+            # At grid points, should be exact
+            @test result[1] ≈ sin(2.0) atol=0.01
+        end
+
+        @testset "arithmetic with interpolation" begin
+            x2 = collect(1.0:0.7:10.0)  # Different grid
+            y2_alt = @. cos(x2)
+            b_alt = (x=x2, y=y2_alt)
+            result = add_spectra(a, b_alt; interpolate=true)
+            @test length(result.y) == length(x)
+        end
+
+        @testset "grid mismatch error" begin
+            x_short = collect(1.0:0.5:5.0)
+            b_short = (x=x_short, y=ones(length(x_short)))
+            @test_throws ErrorException add_spectra(a, b_short)
+        end
+    end
+
+    @testset "Transforms" begin
+        @testset "kubelka_munk" begin
+            @test kubelka_munk(1.0) == 0.0
+            @test kubelka_munk(0.5) == 0.25
+            @test_throws ArgumentError kubelka_munk(0.0)
+            @test_throws ArgumentError kubelka_munk(-0.1)
+        end
+
+        @testset "reflectance_to_absorbance" begin
+            @test reflectance_to_absorbance(0.1) ≈ 1.0
+            @test reflectance_to_absorbance(1.0) ≈ 0.0
+            R = [0.1, 0.5, 1.0]
+            A = reflectance_to_absorbance(R)
+            @test length(A) == 3
+        end
+
+        @testset "snv" begin
+            y = [1.0, 2.0, 3.0, 4.0, 5.0]
+            result = snv(y)
+            @test mean(result) ≈ 0.0 atol=1e-10
+            @test std(result) ≈ 1.0 atol=1e-10
+        end
+
+        @testset "beer_lambert" begin
+            @test beer_lambert(1.0, 0.1) ≈ 10.0
+            @test beer_lambert(1.0, 0.1, 0.01) ≈ 1000.0
+        end
+
+        @testset "tauc_plot" begin
+            # Create synthetic data with known bandgap
+            energy = collect(1.0:0.01:4.0)
+            Eg = 2.5
+            alpha = @. sqrt(max(0.0, energy - Eg))  # Direct gap: alpha*hv ~ (hv-Eg)^0.5
+            result = tauc_plot(energy, alpha; gap_type=:direct)
+            @test haskey(result, :bandgap)
+            @test haskey(result, :hv)
+            @test haskey(result, :tauc_y)
+            @test result.bandgap > 0
+        end
+
+        @testset "kramers_kronig" begin
+            # Lorentzian absorption -> dispersive real part
+            omega = collect(0.1:0.1:10.0)
+            chi_imag = @. 1.0 / (1.0 + (omega - 5.0)^2)
+            result = kramers_kronig(omega, chi_imag; type=:imag_to_real)
+            @test length(result) == length(omega)
+            # Real part should change sign near the resonance
+            # (dispersive lineshape)
+            @test any(result .> 0) && any(result .< 0)
+        end
+
+        @testset "urbach_tail" begin
+            energy = collect(1.0:0.01:3.0)
+            Eu = 0.05  # 50 meV
+            alpha = @. exp((energy - 2.0) / Eu)
+            result = urbach_tail(energy, alpha; fit_range=(1.0, 1.8))
+            @test haskey(result, :Eu)
+            @test result.Eu > 0
+            @test isapprox(result.Eu, Eu, rtol=0.1)
+        end
+
+        @testset "thickness_from_fringes" begin
+            # Create synthetic fringe pattern
+            wn = collect(1000.0:1.0:4000.0)
+            n_ref = 1.5
+            d_true = 0.001  # 10 micron in cm
+            y = @. cos(2π * 2 * n_ref * d_true * wn)
+            result = thickness_from_fringes(wn, y; n=n_ref)
+            @test haskey(result, :thickness)
+            @test result.thickness > 0
+            @test isapprox(result.thickness, d_true, rtol=0.05)
+        end
+    end
+
+    @testset "Rubber band baseline" begin
+        x = collect(1.0:100.0)
+        # Create a spectrum with peaks on top of a linear baseline
+        y = @. 0.01 * x + sin(x / 10) * 5.0
+        bl = rubberband_baseline(x, y)
+        @test length(bl) == length(x)
+        # Baseline should be <= spectrum everywhere (lower envelope)
+        @test all(bl .<= y .+ 1e-10)
+        # Baseline should touch the spectrum at its minima
+        min_idx = argmin(y)
+        @test isapprox(bl[min_idx], y[min_idx], atol=0.1)
+    end
+
+    @testset "correct_baseline rubberband method" begin
+        y = @. sin(1:0.1:10) + 2.0
+        result = correct_baseline(y; method=:rubberband)
+        @test haskey(result, :y)
+        @test haskey(result, :baseline)
+        @test length(result.y) == length(y)
+    end
+
 end
