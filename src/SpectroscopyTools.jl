@@ -79,7 +79,7 @@ export PeakInfo, find_peaks, peak_table
 # ==========================================================================
 # Exports — Baseline correction
 # ==========================================================================
-export als_baseline, arpls_baseline, snip_baseline, rubberband_baseline
+export arpls_baseline, snip_baseline, rubberband_baseline
 export correct_baseline
 
 # ==========================================================================

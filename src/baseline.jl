@@ -2,56 +2,10 @@
 Baseline correction algorithms for spectroscopy.
 
 Provides:
-- `als_baseline` — Asymmetric Least Squares (Eilers & Boelens, 2005)
 - `arpls_baseline` — Asymmetrically Reweighted PLS (Baek et al., 2015)
 - `snip_baseline` — Statistics-sensitive Non-linear Iterative Peak-clipping (Ryan et al., 1988)
+- `rubberband_baseline` — Lower convex hull (rubber band) baseline
 """
-
-# =============================================================================
-# Asymmetric Least Squares (ALS)
-# =============================================================================
-
-"""
-    als_baseline(y; λ=1e5, p=0.01, maxiter=10, tol=1e-6) -> Vector
-
-Asymmetric Least Squares baseline correction.
-"""
-function als_baseline(y::AbstractVector{<:Real};
-                      λ::Real=1e5,
-                      p::Real=0.01,
-                      maxiter::Int=10,
-                      tol::Real=1e-6)
-    n = length(y)
-
-    0 < p < 1 || throw(ArgumentError("p must be in (0, 1), got $p"))
-    λ > 0 || throw(ArgumentError("λ must be positive, got $λ"))
-    n ≥ 3 || throw(ArgumentError("Need at least 3 points, got $n"))
-
-    D = _diff_matrix(n, 2)
-    DtD = D' * D
-
-    w = ones(n)
-    z = similar(y, Float64)
-    z_prev = similar(z)
-
-    for iter in 1:maxiter
-        copyto!(z_prev, z)
-
-        W = spdiagm(0 => w)
-        z .= (W + λ * DtD) \ (w .* y)
-
-        for i in eachindex(w)
-            w[i] = y[i] > z[i] ? p : (1 - p)
-        end
-
-        if iter > 1
-            δ = norm(z - z_prev) / (norm(z) + eps())
-            δ < tol && break
-        end
-    end
-
-    return z
-end
 
 # =============================================================================
 # Asymmetrically Reweighted Penalized Least Squares (arPLS)
@@ -223,9 +177,7 @@ Returns `(y=corrected, baseline=baseline)`.
 function correct_baseline(y::AbstractVector{<:Real};
                           method::Symbol=:arpls,
                           kwargs...)
-    baseline = if method == :als
-        als_baseline(y; kwargs...)
-    elseif method == :arpls
+    baseline = if method == :arpls
         arpls_baseline(y; kwargs...)
     elseif method == :snip
         snip_baseline(y; kwargs...)
@@ -233,7 +185,7 @@ function correct_baseline(y::AbstractVector{<:Real};
         # rubberband_baseline needs x-values; create a dummy index grid
         rubberband_baseline(collect(1.0:length(y)), y)
     else
-        available = (:als, :arpls, :snip, :rubberband)
+        available = (:arpls, :snip, :rubberband)
         throw(ArgumentError("Unknown method :$method. Available: $available"))
     end
 

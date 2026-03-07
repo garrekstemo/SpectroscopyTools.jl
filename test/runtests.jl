@@ -208,19 +208,6 @@ Random.seed!(42)
         @test ydata(result) === result._y
     end
 
-    @testset "Baseline correction - ALS" begin
-        # Synthetic spectrum: peaks on a linear baseline
-        x = collect(1.0:200.0)
-        baseline_true = 0.1 .+ 0.001 .* x
-        peaks = 2.0 .* exp.(-((x .- 50.0) ./ 10.0).^2) .+ 1.5 .* exp.(-((x .- 150.0) ./ 8.0).^2)
-        y = baseline_true .+ peaks
-
-        bl = als_baseline(y; λ=1e5, p=0.01)
-        @test length(bl) == length(y)
-        # Baseline should be below the peaks
-        @test maximum(bl) < maximum(y)
-    end
-
     @testset "Baseline correction - arPLS" begin
         x = collect(1.0:200.0)
         baseline_true = 0.1 .+ 0.001 .* x
@@ -253,7 +240,7 @@ Random.seed!(42)
 
         # With x values
         x = collect(1.0:100.0)
-        result2 = correct_baseline(x, y; method=:als)
+        result2 = correct_baseline(x, y; method=:arpls)
         @test haskey(result2, :x)
         @test haskey(result2, :y)
         @test haskey(result2, :baseline)
