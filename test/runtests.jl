@@ -1961,4 +1961,16 @@ Random.seed!(42)
         @test length(result.y) == length(y)
     end
 
+    @testset "rubber band uses real x-values" begin
+        # Non-uniform x with a valley at x=5
+        x = [1.0, 2.0, 5.0, 8.0, 10.0]
+        y = [1.0, 0.5, 0.2, 0.5, 1.0]
+        result = correct_baseline(x, y; method=:rubberband)
+        @test length(result.baseline) == 5
+        # With real x, the lower convex hull should touch the minimum at x=5
+        # If dummy indices were used, the geometry would differ
+        baseline_at_5 = result.baseline[3]
+        @test baseline_at_5 ≈ 0.2 atol=0.01
+    end
+
 end

@@ -197,9 +197,16 @@ end
     correct_baseline(x, y; kwargs...) -> NamedTuple
 
 Version that also returns x values for convenience.
+Methods that use x-values (rubberband) receive real x, not dummy indices.
 """
-function correct_baseline(x::AbstractVector, y::AbstractVector{<:Real}; kwargs...)
-    result = correct_baseline(y; kwargs...)
+function correct_baseline(x::AbstractVector, y::AbstractVector{<:Real};
+                          method::Symbol=:arpls, kwargs...)
+    if method == :rubberband
+        baseline = rubberband_baseline(x, y)
+        corrected = y - baseline
+        return (x=collect(x), y=corrected, baseline=baseline)
+    end
+    result = correct_baseline(y; method=method, kwargs...)
     return (x=collect(x), y=result.y, baseline=result.baseline)
 end
 
