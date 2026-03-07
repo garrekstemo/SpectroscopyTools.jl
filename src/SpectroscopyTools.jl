@@ -16,7 +16,7 @@ using Statistics
 using LinearAlgebra
 using SparseArrays
 using Unitful
-using Peaks: findmaxima, peakproms!, peakwidths!
+using Peaks: findmaxima, findminima, peakproms!, peakwidths!
 using SavitzkyGolay: savitzky_golay as _sg_filter
 using Interpolations
 using JSON

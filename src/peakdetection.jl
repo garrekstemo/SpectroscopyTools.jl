@@ -60,6 +60,7 @@ Find peaks in spectroscopic data.
 - `max_width::Real=Inf` — Maximum peak width in x-units
 - `min_height::Real=-Inf` — Minimum peak height (absolute)
 - `window::Int=1` — Comparison window for local maxima detection
+- `mode::Symbol=:maxima` — `:maxima` for peaks, `:minima` for valleys (e.g. 2nd derivative)
 - `baseline::Union{Symbol,Nothing}=nothing` — Apply baseline correction before peak detection
 - `baseline_kw::NamedTuple=NamedTuple()` — Keyword arguments for baseline correction
 """
@@ -69,6 +70,7 @@ function find_peaks(x::AbstractVector, y::AbstractVector;
                     max_width::Real=Inf,
                     min_height::Real=-Inf,
                     window::Int=1,
+                    mode::Symbol=:maxima,
                     baseline::Union{Symbol, Nothing}=nothing,
                     baseline_kw::NamedTuple=NamedTuple())
 
@@ -85,7 +87,8 @@ function find_peaks(x::AbstractVector, y::AbstractVector;
     data_range = maximum(y_work) - minimum(y_work)
     abs_min_prom = min_prominence * data_range
 
-    pks = findmaxima(y_work, window)
+    _find = mode === :minima ? findminima : findmaxima
+    pks = _find(y_work, window)
 
     if min_height > -Inf
         mask = pks.heights .>= min_height
