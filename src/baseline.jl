@@ -5,6 +5,8 @@ Provides:
 - `arpls_baseline` — Asymmetrically Reweighted PLS (Baek et al., 2015)
 - `snip_baseline` — Statistics-sensitive Non-linear Iterative Peak-clipping (Ryan et al., 1988)
 - `rubberband_baseline` — Lower convex hull (rubber band) baseline
+- `imodpoly_baseline` — Improved Modified Polynomial (Lieber & Mahadevan-Jansen, 2003)
+- `rolling_ball_baseline` — Morphological erosion-dilation envelope
 """
 
 # =============================================================================
@@ -164,6 +166,141 @@ function rubberband_baseline(x::AbstractVector, y::AbstractVector)
 end
 
 # =============================================================================
+# Improved Modified Polynomial (iModPoly)
+# =============================================================================
+
+"""
+    imodpoly_baseline(x, y; poly_order=4, maxiter=100, tol=1e-3) -> Vector
+
+Improved Modified Polynomial baseline (Lieber & Mahadevan-Jansen, 2003).
+
+Iteratively fits a polynomial to the spectrum, removing points that are
+above the fit by more than one standard deviation of the residuals.
+Converges when the fit changes less than `tol` between iterations.
+"""
+function imodpoly_baseline(x::AbstractVector, y::AbstractVector;
+                           poly_order::Int=4,
+                           maxiter::Int=100,
+                           tol::Real=1e-3)
+    n = length(x)
+    n == length(y) || throw(ArgumentError("x and y must have the same length"))
+    n > poly_order || throw(ArgumentError("Need more points than polynomial order"))
+
+    xv = Float64.(x)
+    yv = Float64.(y)
+
+    # Normalize x to [-1, 1] for numerical stability
+    x_min, x_max = extrema(xv)
+    x_range = x_max - x_min
+    xn = if x_range > 0
+        @. 2 * (xv - x_min) / x_range - 1
+    else
+        zeros(n)
+    end
+
+    y_work = copy(yv)
+    baseline = similar(yv)
+
+    for iter in 1:maxiter
+        coeffs = _polyfit(xn, y_work, poly_order)
+        baseline_new = _polyeval(xn, coeffs)
+
+        if iter > 1
+            δ = norm(baseline_new - baseline) / (norm(baseline_new) + eps())
+            if δ < tol
+                baseline .= baseline_new
+                break
+            end
+        end
+
+        baseline .= baseline_new
+
+        residuals_neg = filter(<(0), yv .- baseline)
+        dev = isempty(residuals_neg) ? 0.0 : std(residuals_neg; corrected=false)
+        if dev < eps()
+            break
+        end
+
+        for i in eachindex(y_work)
+            y_work[i] = yv[i] > baseline[i] + dev ? baseline[i] : yv[i]
+        end
+    end
+
+    return baseline
+end
+
+function _polyfit(x::Vector{Float64}, y::Vector{Float64}, d::Int)
+    n = length(x)
+    V = zeros(n, d + 1)
+    for j in 0:d
+        for i in eachindex(x)
+            V[i, j+1] = x[i]^j
+        end
+    end
+    return V \ y
+end
+
+function _polyeval(x::Vector{Float64}, coeffs::Vector{Float64})
+    y = zeros(length(x))
+    for (j, c) in enumerate(coeffs)
+        for i in eachindex(x)
+            y[i] += c * x[i]^(j-1)
+        end
+    end
+    return y
+end
+
+# =============================================================================
+# Rolling ball baseline
+# =============================================================================
+
+"""
+    rolling_ball_baseline(y; half_window=50, smooth_half_window=nothing) -> Vector
+
+Rolling ball baseline estimation using morphological operations.
+
+Applies erosion (rolling minimum) then dilation (rolling maximum) to estimate
+the baseline envelope, followed by moving-average smoothing.
+
+# Arguments
+- `half_window::Int=50`: Half-window size for morphological operations.
+- `smooth_half_window::Int`: Half-window for final smoothing (default: `half_window`).
+"""
+function rolling_ball_baseline(y::AbstractVector{<:Real};
+                               half_window::Int=50,
+                               smooth_half_window::Union{Int,Nothing}=nothing)
+    n = length(y)
+    half_window > 0 || throw(ArgumentError("half_window must be positive"))
+    n > 2 * half_window || throw(ArgumentError("Signal too short for window size"))
+
+    s_hw = something(smooth_half_window, half_window)
+    yv = Float64.(y)
+
+    eroded = similar(yv)
+    for i in eachindex(yv)
+        lo = max(1, i - half_window)
+        hi = min(n, i + half_window)
+        eroded[i] = minimum(@view yv[lo:hi])
+    end
+
+    dilated = similar(yv)
+    for i in eachindex(eroded)
+        lo = max(1, i - half_window)
+        hi = min(n, i + half_window)
+        dilated[i] = maximum(@view eroded[lo:hi])
+    end
+
+    baseline = similar(yv)
+    for i in eachindex(dilated)
+        lo = max(1, i - s_hw)
+        hi = min(n, i + s_hw)
+        baseline[i] = mean(@view dilated[lo:hi])
+    end
+
+    return baseline
+end
+
+# =============================================================================
 # Unified API
 # =============================================================================
 
@@ -182,10 +319,13 @@ function correct_baseline(y::AbstractVector{<:Real};
     elseif method == :snip
         snip_baseline(y; kwargs...)
     elseif method == :rubberband
-        # rubberband_baseline needs x-values; create a dummy index grid
         rubberband_baseline(collect(1.0:length(y)), y)
+    elseif method == :imodpoly
+        imodpoly_baseline(collect(1.0:length(y)), y; kwargs...)
+    elseif method == :rolling_ball
+        rolling_ball_baseline(y; kwargs...)
     else
-        available = (:arpls, :snip, :rubberband)
+        available = (:arpls, :snip, :rubberband, :imodpoly, :rolling_ball)
         throw(ArgumentError("Unknown method :$method. Available: $available"))
     end
 
@@ -203,6 +343,10 @@ function correct_baseline(x::AbstractVector, y::AbstractVector{<:Real};
                           method::Symbol=:arpls, kwargs...)
     if method == :rubberband
         baseline = rubberband_baseline(x, y)
+        corrected = y - baseline
+        return (x=collect(x), y=corrected, baseline=baseline)
+    elseif method == :imodpoly
+        baseline = imodpoly_baseline(x, y; kwargs...)
         corrected = y - baseline
         return (x=collect(x), y=corrected, baseline=baseline)
     end

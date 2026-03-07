@@ -1967,10 +1967,50 @@ Random.seed!(42)
         y = [1.0, 0.5, 0.2, 0.5, 1.0]
         result = correct_baseline(x, y; method=:rubberband)
         @test length(result.baseline) == 5
-        # With real x, the lower convex hull should touch the minimum at x=5
-        # If dummy indices were used, the geometry would differ
         baseline_at_5 = result.baseline[3]
         @test baseline_at_5 ≈ 0.2 atol=0.01
+    end
+
+    @testset "imodpoly_baseline" begin
+        # Synthetic: polynomial background + Gaussian peak
+        x = range(0, 10, length=500)
+        bg = @. 0.5 * x^2 - 2x + 10
+        peak = @. 5.0 * exp(-((x - 5)^2) / (2 * 0.3^2))
+        y = bg + peak
+
+        baseline = imodpoly_baseline(collect(x), collect(y); poly_order=2)
+        @test length(baseline) == 500
+        @test maximum(abs.(baseline - bg)) < 1.0
+
+        # Flat spectrum
+        y_flat = ones(100)
+        bl_flat = imodpoly_baseline(collect(range(0, 1, length=100)), y_flat)
+        @test all(isapprox.(bl_flat, 1.0, atol=0.01))
+
+        # Via unified API
+        result = correct_baseline(collect(x), collect(y); method=:imodpoly, poly_order=2)
+        @test haskey(result, :baseline)
+        @test haskey(result, :y)
+    end
+
+    @testset "rolling_ball_baseline" begin
+        # Synthetic: sloped baseline + sharp peaks
+        x = collect(1.0:500.0)
+        bg = @. 0.01 * x
+        peaks = zeros(500)
+        peaks[100] = 5.0; peaks[250] = 8.0; peaks[400] = 3.0
+        y = bg + peaks
+
+        baseline = rolling_ball_baseline(y; half_window=20)
+        @test length(baseline) == 500
+        @test baseline[100] < y[100]
+        @test baseline[250] < y[250]
+        @test abs(baseline[50] - bg[50]) < 1.0
+
+        # Via unified API
+        result = correct_baseline(y; method=:rolling_ball, half_window=20)
+        @test haskey(result, :baseline)
+        @test length(result.y) == 500
     end
 
 end
