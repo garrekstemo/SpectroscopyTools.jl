@@ -16,13 +16,14 @@ jobs:
       fail-fast: false
       matrix:
         version:
-          - '1.10'
           - '1.12'
           - 'nightly'
         os:
           - ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Clone sibling repos (for [sources] local paths)
+        run: git clone --depth 1 https://github.com/garrekstemo/CurveFitModels.jl ../CurveFitModels.jl
       - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
@@ -36,6 +37,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Clone sibling repos (for [sources] local paths)
+        run: git clone --depth 1 https://github.com/garrekstemo/CurveFitModels.jl ../CurveFitModels.jl
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
