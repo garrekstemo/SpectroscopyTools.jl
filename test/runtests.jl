@@ -4,10 +4,15 @@ using Unitful
 using Statistics
 using LinearAlgebra: rank
 using JSON
+using Aqua
 import Random
 Random.seed!(42)
 
 @testset "SpectroscopyTools.jl" begin
+
+    @testset "Code quality (Aqua.jl)" begin
+        Aqua.test_all(SpectroscopyTools)
+    end
 
     @testset "Type hierarchy" begin
         @test TATrace <: AbstractSpectroscopyData
