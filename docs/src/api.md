@@ -84,9 +84,11 @@ report
 ## Baseline Correction
 
 ```@docs
-als_baseline
 arpls_baseline
 snip_baseline
+rubberband_baseline
+imodpoly_baseline
+rolling_ball_baseline
 correct_baseline
 ```
 

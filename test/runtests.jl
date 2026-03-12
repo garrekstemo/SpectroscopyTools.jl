@@ -1124,6 +1124,37 @@ Random.seed!(42)
             @test length(cal.wavelength) > 0
         end
 
+        @testset "detect_chirp :threshold recovers known linear chirp" begin
+            n_time = 200
+            n_wl = 80
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            slope = 0.005
+            chirp_fn(λ) = slope * (λ - ref_λ)
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                t_onset = chirp_fn(wavelength[j])
+                for i in eachindex(time)
+                    if time[i] > t_onset
+                        data[i, j] = 0.5 * exp(-(time[i] - t_onset) / 3.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+            cal = detect_chirp(matrix; method=:threshold, order=1,
+                               reference=ref_λ, smooth_window=7, bin_width=4)
+
+            poly = polynomial(cal)
+            @test poly(ref_λ) ≈ 0.0 atol=0.5
+            @test abs(poly(ref_λ + 50) - slope * 50) < 1.0
+            @test abs(poly(ref_λ - 50) - slope * (-50)) < 1.0
+            @test cal.r_squared > 0.9
+        end
+
         @testset "detect_chirp input validation" begin
             n_time = 50
             n_wl = 20
@@ -1225,6 +1256,39 @@ Random.seed!(42)
             inner = n_wl ÷ 4 : 3 * n_wl ÷ 4
             peak_times = [time[argmax(corrected.data[:, j])] for j in inner]
             @test std(peak_times) < 0.3
+        end
+
+        @testset "detect-then-correct pipeline" begin
+            n_time = 200
+            n_wl = 80
+            time = collect(range(-5.0, 15.0, length=n_time))
+            wavelength = collect(range(500.0, 700.0, length=n_wl))
+
+            ref_λ = 600.0
+            chirp_fn(λ) = 0.0001 * (λ - ref_λ)^2
+
+            data = zeros(n_time, n_wl)
+            for j in eachindex(wavelength)
+                t_onset = chirp_fn(wavelength[j])
+                for i in eachindex(time)
+                    if time[i] > t_onset
+                        data[i, j] = exp(-(time[i] - t_onset) / 3.0)
+                    end
+                end
+            end
+
+            matrix = TAMatrix(time, wavelength, data)
+            cal = detect_chirp(matrix; order=2, reference=ref_λ, bin_width=4)
+            corrected = correct_chirp(matrix, cal)
+
+            @test corrected isa TAMatrix
+            @test corrected.metadata[:chirp_corrected] == true
+
+            # After correction, onset times should be more aligned
+            inner_wl = 20:60
+            peak_times_before = [time[argmax(abs.(data[:, j]))] for j in inner_wl]
+            peak_times_after = [time[argmax(abs.(corrected.data[:, j]))] for j in inner_wl]
+            @test std(peak_times_after) < std(peak_times_before)
         end
 
         @testset "ChirpCalibration show methods" begin
@@ -2011,6 +2075,52 @@ Random.seed!(42)
         result = correct_baseline(y; method=:rolling_ball, half_window=20)
         @test haskey(result, :baseline)
         @test length(result.y) == 500
+    end
+
+    @testset "Internal polynomial utilities" begin
+        @testset "_polyeval scalar — Horner's method" begin
+            # Linear: 2 + 3x at x=4 -> 14
+            @test SpectroscopyTools._polyeval([2.0, 3.0], 4.0) ≈ 14.0
+            # Quadratic: 1 + 0.5x + 0.01x^2 at x=10 -> 1 + 5 + 1 = 7
+            @test SpectroscopyTools._polyeval([1.0, 0.5, 0.01], 10.0) ≈ 7.0
+            # Constant polynomial
+            @test SpectroscopyTools._polyeval([42.0], 999.0) ≈ 42.0
+            # Zero polynomial
+            @test SpectroscopyTools._polyeval([0.0, 0.0, 0.0], 5.0) ≈ 0.0
+            # Higher order: 1 + x + x^2 + x^3 + x^4 at x=2 -> 1+2+4+8+16 = 31
+            @test SpectroscopyTools._polyeval([1.0, 1.0, 1.0, 1.0, 1.0], 2.0) ≈ 31.0
+        end
+
+        @testset "_polyeval vector — element-wise" begin
+            coeffs = [2.0, 3.0]  # 2 + 3x
+            xs = [0.0, 1.0, 2.0, 10.0]
+            result = SpectroscopyTools._polyeval(coeffs, xs)
+            @test result ≈ [2.0, 5.0, 8.0, 32.0]
+        end
+
+        @testset "_polyfit recovers known coefficients" begin
+            # Exact quadratic: y = 2 + x + 0.5x^2
+            x = collect(range(0.0, 4.0, length=20))
+            y = @. 2.0 + x + 0.5 * x^2
+            coeffs = SpectroscopyTools._polyfit(x, y, 2)
+            @test coeffs ≈ [2.0, 1.0, 0.5] atol=1e-10
+
+            # Exact cubic
+            x2 = collect(range(-2.0, 2.0, length=30))
+            y2 = @. 1.0 - 0.5 * x2 + 0.1 * x2^2 + 0.05 * x2^3
+            coeffs2 = SpectroscopyTools._polyfit(x2, y2, 3)
+            @test coeffs2 ≈ [1.0, -0.5, 0.1, 0.05] atol=1e-10
+        end
+
+        @testset "_polyfit and _polyeval round-trip" begin
+            # Fit data, evaluate, should recover original
+            x = collect(range(-1.0, 1.0, length=50))
+            true_coeffs = [3.0, -1.0, 2.0]
+            y = @. true_coeffs[1] + true_coeffs[2] * x + true_coeffs[3] * x^2
+            fit_coeffs = SpectroscopyTools._polyfit(x, y, 2)
+            y_eval = SpectroscopyTools._polyeval(fit_coeffs, x)
+            @test y_eval ≈ y atol=1e-10
+        end
     end
 
 end

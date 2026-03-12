@@ -57,8 +57,6 @@ function Base.show(io::IO, ::MIME"text/plain", cal::ChirpCalibration)
     print(io,   "  Coefficients:      ", [round(c, digits=6) for c in cal.poly_coeffs])
 end
 
-report(cal::ChirpCalibration) = (show(stdout, MIME("text/plain"), cal); println(); nothing)
-
 # =============================================================================
 # Background subtraction
 # =============================================================================
@@ -449,37 +447,6 @@ function _fit_chirp_polynomial(wl, times, order, threshold, ref_λ)
 
     return clean_wl, clean_times, coeffs, r2
 end
-
-"""
-Fit a polynomial of given order. Returns coefficients in ascending order:
-c[1] + c[2]*x + c[3]*x² + ...
-"""
-function _polyfit(x, y, order)
-    # Vandermonde matrix
-    n = length(x)
-    V = Matrix{Float64}(undef, n, order + 1)
-    for j in 0:order
-        V[:, j+1] = x .^ j
-    end
-    # Least squares solve
-    return V \ y
-end
-
-"""
-Evaluate polynomial with ascending-order coefficients at a scalar using Horner's method.
-"""
-function _polyeval(coeffs, x::Real)
-    result = coeffs[end]
-    for i in (length(coeffs) - 1):-1:1
-        result = muladd(result, x, coeffs[i])
-    end
-    return result
-end
-
-"""
-Evaluate polynomial with ascending-order coefficients at each element of a vector.
-"""
-_polyeval(coeffs, x::AbstractVector) = [_polyeval(coeffs, xj) for xj in x]
 
 # =============================================================================
 # Chirp correction
