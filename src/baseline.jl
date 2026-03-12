@@ -203,7 +203,7 @@ function imodpoly_baseline(x::AbstractVector, y::AbstractVector;
 
     for iter in 1:maxiter
         coeffs = _polyfit(xn, y_work, poly_order)
-        baseline_new = _polyeval(xn, coeffs)
+        baseline_new = _polyeval(coeffs, xn)
 
         if iter > 1
             δ = norm(baseline_new - baseline) / (norm(baseline_new) + eps())
@@ -240,15 +240,21 @@ function _polyfit(x::Vector{Float64}, y::Vector{Float64}, d::Int)
     return V \ y
 end
 
-function _polyeval(x::Vector{Float64}, coeffs::Vector{Float64})
-    y = zeros(length(x))
-    for (j, c) in enumerate(coeffs)
-        for i in eachindex(x)
-            y[i] += c * x[i]^(j-1)
-        end
+"""
+Evaluate polynomial with ascending-order coefficients at a scalar using Horner's method.
+"""
+function _polyeval(coeffs::AbstractVector, x::Real)
+    result = coeffs[end]
+    for i in (length(coeffs) - 1):-1:1
+        result = muladd(result, x, coeffs[i])
     end
-    return y
+    return result
 end
+
+"""
+Evaluate polynomial with ascending-order coefficients at each element of a vector.
+"""
+_polyeval(coeffs::AbstractVector, x::AbstractVector) = [_polyeval(coeffs, xj) for xj in x]
 
 # =============================================================================
 # Rolling ball baseline
