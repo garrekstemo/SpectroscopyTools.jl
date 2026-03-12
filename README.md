@@ -33,8 +33,8 @@ fit = fit_exp_decay(trace; n_exp=2, irf=true)
 report(fit)
 
 # Baseline correction
-baseline = als_baseline(y; lambda=1e5, p=0.01)
-y_corrected = y .- baseline
+result = correct_baseline(x, y; method=:arpls)
+y_corrected = result.y
 
 # Unit conversions (with Unitful)
 wavelength_to_wavenumber(1500u"nm")
@@ -45,16 +45,18 @@ decay_time_to_linewidth(1.0u"ps")
 
 | Module | Description |
 |--------|-------------|
-| **Peak fitting** | Gaussian, Lorentzian, Pseudo-Voigt via [CurveFit.jl](https://github.com/garrekstemo/CurveFit.jl) |
+| **Peak fitting** | Gaussian, Lorentzian, Voigt, Pseudo-Voigt, Fano via [CurveFit.jl](https://github.com/garrekstemo/CurveFit.jl) |
 | **TA spectrum fitting** | N-peak model with ESA/GSB/SE labels and sign convention |
 | **Peak detection** | Automatic peak finding with prominence filtering |
-| **Baseline correction** | ALS, ARPLS, SNIP |
+| **Baseline correction** | arPLS, SNIP, rubber band, iModPoly, rolling ball |
 | **Exponential decay** | Single/multi-exponential with optional IRF convolution |
-| **Global fitting** | Shared parameters across multiple traces |
-| **Chirp correction** | GVD detection and correction for broadband TA |
+| **Global fitting** | Shared parameters across multiple traces, decay-associated spectra |
+| **Chirp correction** | GVD detection (cross-correlation, threshold) and correction for broadband TA |
 | **SVD filtering** | Matrix denoising for broadband TA data |
+| **PL/Raman mapping** | Spatial maps, peak fitting, cosmic ray detection and removal |
+| **Spectral math** | Smoothing, derivatives, band area, normalization, spectral arithmetic |
+| **Transforms** | Kramers-Kronig, Kubelka-Munk, Tauc plot, SNV, Urbach tail |
 | **Unit conversions** | Wavenumber, wavelength, energy, linewidth interconversion |
-| **Smoothing** | Savitzky-Golay filtering |
 
 ## Data Types
 
@@ -76,7 +78,3 @@ matrix[t=1.0]   # -> TASpectrum at nearest time delay
 ## Dependencies
 
 SpectroscopyTools uses [CurveFit.jl](https://github.com/garrekstemo/CurveFit.jl) as the nonlinear fitting backend and [CurveFitModels.jl](https://github.com/garrekstemo/CurveFitModels.jl) for model functions. Unit conversions use [Unitful.jl](https://github.com/PainterQubits/Unitful.jl).
-
-## License
-
-MIT
