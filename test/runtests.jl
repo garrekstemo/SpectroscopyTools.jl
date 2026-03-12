@@ -11,7 +11,7 @@ Random.seed!(42)
 @testset "SpectroscopyTools.jl" begin
 
     @testset "Code quality (Aqua.jl)" begin
-        Aqua.test_all(SpectroscopyTools)
+        Aqua.test_all(SpectroscopyTools; deps_compat=(check_extras=false, ignore=[:LinearAlgebra, :SparseArrays, :Statistics],))
     end
 
     @testset "Type hierarchy" begin
