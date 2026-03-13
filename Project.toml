@@ -18,14 +18,14 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [compat]
 Aqua = "0.8"
-CurveFit = "1.4"
+CurveFit = "1"
 CurveFitModels = "0.1"
-JSON = "0.21"
-Interpolations = "0.16.2"
+Interpolations = "0.16"
+JSON = "1"
 Peaks = "0.6"
 PhysicalConstants = "0.2"
 SavitzkyGolay = "0.9"
-Unitful = "1.28"
+Unitful = "1"
 julia = "1.10"
 
 [extras]
