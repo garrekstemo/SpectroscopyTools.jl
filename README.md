@@ -4,6 +4,7 @@
 [![](https://img.shields.io/badge/docs-stable-blue.svg)](https://garrekstemo.github.io/SpectroscopyTools.jl/stable/)
 [![](https://img.shields.io/badge/docs-dev-blue.svg)](https://garrekstemo.github.io/SpectroscopyTools.jl/dev/)
 [![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
+[![codecov](https://codecov.io/gh/garrekstemo/SpectroscopyTools.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/garrekstemo/SpectroscopyTools.jl)
 
 A general-purpose spectroscopy analysis toolkit for Julia.
 
