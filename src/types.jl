@@ -606,15 +606,19 @@ Contains per-pixel fit results and pre-extracted summary arrays suitable
 for heatmap visualization. Pixels that were skipped (masked) or failed
 to converge have `nothing` in the results matrix and `NaN` in summary arrays.
 
+Summary arrays are 3D `(nx, ny, n_peaks)` for per-peak quantities (centers,
+fwhms, amplitudes) and 2D `(nx, ny)` for per-pixel quantities (r_squareds).
+
 Created by [`fit_map`](@ref).
 
 # Fields
 - `results::Matrix{Any}` — Per-pixel `MultiPeakFitResult` or `nothing`
 - `mask::Union{BitMatrix, Nothing}` — Fit mask used (if any)
-- `centers::Matrix{Float64}` — Peak center from first peak
-- `fwhms::Matrix{Float64}` — FWHM from first peak
-- `amplitudes::Matrix{Float64}` — Amplitude from first peak
+- `centers::Array{Float64, 3}` — Peak center per peak `(nx, ny, n_peaks)`
+- `fwhms::Array{Float64, 3}` — FWHM per peak `(nx, ny, n_peaks)`
+- `amplitudes::Array{Float64, 3}` — Amplitude per peak `(nx, ny, n_peaks)`
 - `r_squareds::Matrix{Float64}` — Per-pixel R²
+- `n_peaks::Int` — Number of peaks fitted
 - `n_converged::Int` — Number of successfully fitted pixels
 - `n_failed::Int` — Number of pixels where fitting threw an error
 - `n_skipped::Int` — Number of pixels excluded by the mask
@@ -623,10 +627,11 @@ Created by [`fit_map`](@ref).
 struct FitMapResult
     results::Matrix{Any}
     mask::Union{BitMatrix, Nothing}
-    centers::Matrix{Float64}
-    fwhms::Matrix{Float64}
-    amplitudes::Matrix{Float64}
+    centers::Array{Float64, 3}
+    fwhms::Array{Float64, 3}
+    amplitudes::Array{Float64, 3}
     r_squareds::Matrix{Float64}
+    n_peaks::Int
     n_converged::Int
     n_failed::Int
     n_skipped::Int
