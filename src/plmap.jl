@@ -375,15 +375,14 @@ function peak_centers(m::PLMap; pixel_range::Union{Tuple{Int,Int},Nothing}=nothi
     cutoff = max_intensity > 0 ? max_intensity * threshold : zero(max_intensity)
 
     centers = Matrix{Float64}(undef, nx, ny)
-    for iy in 1:ny
-        for ix in 1:nx
-            if m.intensity[ix, iy] <= cutoff
-                centers[ix, iy] = NaN
-            else
-                sig = @view spectra_slice[ix, iy, :]
-                total = sum(sig)
-                centers[ix, iy] = sum(pixels[k] * sig[k] for k in eachindex(sig)) / total
-            end
+    Threads.@threads for idx in CartesianIndices((nx, ny))
+        ix, iy = idx[1], idx[2]
+        if m.intensity[ix, iy] <= cutoff
+            centers[ix, iy] = NaN
+        else
+            sig = @view spectra_slice[ix, iy, :]
+            total = sum(sig)
+            centers[ix, iy] = sum(pixels[k] * sig[k] for k in eachindex(sig)) / total
         end
     end
     return centers
@@ -542,29 +541,32 @@ function fit_map(m::PLMap;
         end
     end
 
-    # Build summary arrays from first peak of each fit
-    centers = fill(NaN, nx, ny)
-    fwhms = fill(NaN, nx, ny)
-    amplitudes = fill(NaN, nx, ny)
+    # Build summary arrays for all peaks
+    centers = fill(NaN, nx, ny, n_peaks)
+    fwhms = fill(NaN, nx, ny, n_peaks)
+    amplitudes = fill(NaN, nx, ny, n_peaks)
     r_squareds = fill(NaN, nx, ny)
 
     for iy in 1:ny
         for ix in 1:nx
             r = results[ix, iy]
             isnothing(r) && continue
-            pk = r.peaks[1]
-            if haskey(pk, :center)
-                centers[ix, iy] = pk[:center].value
-            end
-            if haskey(pk, :fwhm)
-                fwhms[ix, iy] = pk[:fwhm].value
-            elseif haskey(pk, :sigma)
-                fwhms[ix, iy] = pk[:sigma].value * 2 * sqrt(2 * log(2))
-            end
-            if haskey(pk, :amplitude)
-                amplitudes[ix, iy] = pk[:amplitude].value
-            end
             r_squareds[ix, iy] = r.r_squared
+            for pk_idx in eachindex(r.peaks)
+                pk_idx > n_peaks && break
+                pk = r.peaks[pk_idx]
+                if haskey(pk, :center)
+                    centers[ix, iy, pk_idx] = pk[:center].value
+                end
+                if haskey(pk, :fwhm)
+                    fwhms[ix, iy, pk_idx] = pk[:fwhm].value
+                elseif haskey(pk, :sigma)
+                    fwhms[ix, iy, pk_idx] = pk[:sigma].value * 2 * sqrt(2 * log(2))
+                end
+                if haskey(pk, :amplitude)
+                    amplitudes[ix, iy, pk_idx] = pk[:amplitude].value
+                end
+            end
         end
     end
 
@@ -574,6 +576,6 @@ function fit_map(m::PLMap;
     return FitMapResult(
         results, mask,
         centers, fwhms, amplitudes, r_squareds,
-        n_converged[], n_failed[], n_skipped, med_rsq
+        n_peaks, n_converged[], n_failed[], n_skipped, med_rsq
     )
 end
