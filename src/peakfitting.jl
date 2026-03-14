@@ -16,17 +16,19 @@ function _model_name(model::Function)
         return "gaussian"
     elseif occursin("voigt", lowercase(name))
         return "pseudo_voigt"
+    elseif occursin("fano", lowercase(name))
+        return "fano"
     else
         return name
     end
 end
 
-_is_known_model(f::Function) = f in (lorentzian, gaussian, pseudo_voigt)
+_is_known_model(f::Function) = f in (lorentzian, gaussian, pseudo_voigt, fano)
 
 function _n_peak_params(model::Function)
     if model in (lorentzian, gaussian)
         return 3
-    elseif model === pseudo_voigt
+    elseif model in (pseudo_voigt, fano)
         return 4
     else
         error("Unknown model. Provide n_peak_params manually.")
@@ -40,6 +42,8 @@ function _peak_param_names(model::Function)
         return [:amplitude, :center, :sigma]
     elseif model === pseudo_voigt
         return [:amplitude, :center, :sigma, :mixing]
+    elseif model === fano
+        return [:amplitude, :center, :width, :q]
     else
         error("Unknown model. Provide param_names manually.")
     end
@@ -52,6 +56,8 @@ function _width_guess(fwhp::Real, model::Function)
         return fwhp / (2 * sqrt(2 * log(2)))
     elseif model === pseudo_voigt
         return fwhp / 2
+    elseif model === fano
+        return fwhp
     else
         return fwhp
     end
@@ -71,8 +77,12 @@ function _peaks_to_p0(detected::Vector{PeakInfo}, x, y, model::Function; baselin
         if npp >= 3
             p0[offset + 3] = _width_guess(pk.width, model)
         end
-        if npp >= 4 && model === pseudo_voigt
-            p0[offset + 4] = 0.5
+        if npp >= 4
+            if model === pseudo_voigt
+                p0[offset + 4] = 0.5
+            elseif model === fano
+                p0[offset + 4] = 1.0  # q = 1 (moderate asymmetry, |q| -> Inf is Lorentzian)
+            end
         end
     end
 
