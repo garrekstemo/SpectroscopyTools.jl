@@ -153,6 +153,22 @@ Random.seed!(42)
         @test result.r_squared > 0.99
     end
 
+    @testset "fit_peaks with Fano model" begin
+        # Synthetic asymmetric Fano peak: A=1.0, x0=2050, Gamma=10, q=3
+        x = collect(1900.0:0.5:2200.0)
+        A, x0, Gamma, q = 1.0, 2050.0, 10.0, 3.0
+        y = @. A * (q + (x - x0) / Gamma)^2 / (1 + ((x - x0) / Gamma)^2) + 0.01
+
+        result = fit_peaks(x, y; n_peaks=1, model=fano)
+        @test result isa MultiPeakFitResult
+        @test length(result) == 1
+        @test result[1][:center].value ≈ x0 atol=1.0
+        @test result[1][:width].value ≈ Gamma atol=2.0
+        @test result[1][:q].value ≈ q atol=1.0
+        @test haskey(result[1], :amplitude)
+        @test result.r_squared > 0.99
+    end
+
     @testset "fit_peaks multi-peak" begin
         # Synthetic two-peak spectrum
         x = collect(1900.0:0.5:2200.0)
