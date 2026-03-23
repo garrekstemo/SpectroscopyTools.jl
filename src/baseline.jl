@@ -34,7 +34,7 @@ function arpls_baseline(y::AbstractVector{<:Real};
     z = similar(y, Float64)
 
     for iter in 1:maxiter
-        w_prev = copy(w)
+        w_norm_prev = norm(w)
 
         W = spdiagm(0 => w)
         z .= (W + λ * DtD) \ (w .* y)
@@ -58,7 +58,8 @@ function arpls_baseline(y::AbstractVector{<:Real};
             w[i] = 1 / (1 + exp(2 * (d[i] - threshold) / σ))
         end
 
-        δ = norm(w - w_prev) / (norm(w) + eps())
+        w_norm = norm(w)
+        δ = abs(w_norm - w_norm_prev) / (w_norm + eps())
         δ < tol && break
     end
 

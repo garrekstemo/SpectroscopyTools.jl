@@ -33,6 +33,7 @@ include("peakfitting.jl")
 include("fitting.jl")
 include("chirp.jl")
 include("plmap.jl")
+include("decomposition.jl")
 include("cosmic_rays.jl")
 
 # ==========================================================================
@@ -48,6 +49,9 @@ export delay, signal, wavenumber, wavelength
 export PLMap, extract_spectrum, peak_centers, intensity
 export integrated_intensity, intensity_mask, fit_map, FitMapResult
 export CosmicRayResult, CosmicRayMapResult, detect_cosmic_rays, remove_cosmic_rays
+
+# PL Map decomposition (PCA, NMF)
+export DecompositionResult, pca_map, nmf_map
 
 # ==========================================================================
 # Exports — Fit Results

@@ -356,8 +356,9 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
     # Two-pass approach: first compute per-pixel noise estimates to establish
     # a global noise floor, then flag with max(local_σ, floor). This prevents
     # false positives in spatially homogeneous regions where local σ is tiny.
-    pixel_sigmas = Float64[]
-    for iy in 1:ny, ix in 1:nx
+    sigmas = fill(NaN, nx, ny)
+    Threads.@threads for idx in CartesianIndices((nx, ny))
+        ix, iy = idx[1], idx[2]
         neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
         isempty(neighbors) && continue
         signal = @view m.spectra[ix, iy, p1:p2]
@@ -370,12 +371,14 @@ function detect_cosmic_rays(m::PLMap; threshold::Real=5.0,
         end
         mad_r = median(abs.(residual .- median(residual)))
         if mad_r > eps(Float64)
-            push!(pixel_sigmas, mad_r / 0.6745)
+            sigmas[ix, iy] = mad_r / 0.6745
         end
     end
+    pixel_sigmas = filter(!isnan, vec(sigmas))
     noise_floor = isempty(pixel_sigmas) ? 0.0 : median(pixel_sigmas)
 
-    for iy in 1:ny, ix in 1:nx
+    Threads.@threads for idx in CartesianIndices((nx, ny))
+        ix, iy = idx[1], idx[2]
         neighbors = _neighbor_spectra(m.spectra, ix, iy, nx, ny, p1, p2)
         isempty(neighbors) && continue
 
@@ -474,7 +477,8 @@ function remove_cosmic_rays(m::PLMap, result::CosmicRayMapResult)
     p2 = !isnothing(pr) ? min(np, Int(pr[2])) : np
     n_ch = p2 - p1 + 1
 
-    for iy in 1:ny, ix in 1:nx
+    Threads.@threads for idx in CartesianIndices((nx, ny))
+        ix, iy = idx[1], idx[2]
         any(@view result.mask[ix, iy, :]) || continue
 
         # Find the Most Similar Neighbor (MSN) for this pixel
