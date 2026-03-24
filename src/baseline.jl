@@ -28,30 +28,62 @@ function arpls_baseline(y::AbstractVector{<:Real};
     n ≥ 3 || throw(ArgumentError("Need at least 3 points, got $n"))
 
     D = _diff_matrix(n, 2)
-    DtD = D' * D
+    H = λ * (D' * D)                   # constant penalty term — compute once
 
-    w = ones(n)
-    z = similar(y, Float64)
+    w   = ones(n)
+    z   = similar(y, Float64)
+    d   = similar(y, Float64)           # residual vector (reused)
+    rhs = similar(y, Float64)           # right-hand side (reused)
+
+    # Build initial system matrix and symbolic Cholesky factorization
+    A = copy(H)
+    for i in eachindex(w)
+        A[i, i] += w[i]
+    end
+    F = cholesky(A)
 
     for iter in 1:maxiter
         w_norm_prev = norm(w)
 
-        W = spdiagm(0 => w)
-        z .= (W + λ * DtD) \ (w .* y)
-
-        d = y - z
-
-        d_neg = d[d .< 0]
-        if isempty(d_neg)
-            break
+        # Rebuild system matrix: A = H + diag(w)
+        # Copy the constant part and add current weights to diagonal
+        copy!(A, H)
+        for i in eachindex(w)
+            A[i, i] += w[i]
         end
 
-        m = mean(d_neg)
-        σ = std(d_neg; corrected=false)
+        # Reuse symbolic factorization, only redo numeric factorization
+        cholesky!(F, A)
 
-        if σ < eps()
-            break
+        # Solve (H + diag(w)) * z = w .* y
+        for i in eachindex(rhs)
+            rhs[i] = w[i] * y[i]
         end
+        z .= F \ rhs
+
+        # Residuals: d = y - z
+        for i in eachindex(d)
+            d[i] = y[i] - z[i]
+        end
+
+        # Single-pass mean and variance of negative residuals (no allocation)
+        neg_sum  = 0.0
+        neg_sum2 = 0.0
+        neg_count = 0
+        for i in eachindex(d)
+            if d[i] < 0
+                neg_count += 1
+                neg_sum  += d[i]
+                neg_sum2 += d[i] * d[i]
+            end
+        end
+
+        neg_count == 0 && break
+
+        m = neg_sum / neg_count
+        σ = sqrt(neg_sum2 / neg_count - m * m)
+
+        σ < eps() && break
 
         threshold = -m + 2σ
         for i in eachindex(w)
