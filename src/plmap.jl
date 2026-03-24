@@ -560,6 +560,11 @@ function fit_map(m::PLMap;
                 end
                 if haskey(pk, :fwhm)
                     fwhms[ix, iy, pk_idx] = pk[:fwhm].value
+                elseif haskey(pk, :sigma) && haskey(pk, :gamma)
+                    # Voigt FWHM approximation (Thompson et al., 1987)
+                    fwhm_g = pk[:sigma].value * 2 * sqrt(2 * log(2))
+                    fwhm_l = 2 * abs(pk[:gamma].value)
+                    fwhms[ix, iy, pk_idx] = 0.5346 * fwhm_l + sqrt(0.2166 * fwhm_l^2 + fwhm_g^2)
                 elseif haskey(pk, :sigma)
                     fwhms[ix, iy, pk_idx] = pk[:sigma].value * 2 * sqrt(2 * log(2))
                 end

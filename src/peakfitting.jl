@@ -14,8 +14,10 @@ function _model_name(model::Function)
         return "lorentzian"
     elseif occursin("gaussian", lowercase(name))
         return "gaussian"
-    elseif occursin("voigt", lowercase(name))
+    elseif occursin("pseudo_voigt", lowercase(name))
         return "pseudo_voigt"
+    elseif occursin("voigt", lowercase(name))
+        return "voigt"
     elseif occursin("fano", lowercase(name))
         return "fano"
     else
@@ -23,12 +25,12 @@ function _model_name(model::Function)
     end
 end
 
-_is_known_model(f::Function) = f in (lorentzian, gaussian, pseudo_voigt, fano)
+_is_known_model(f::Function) = f in (lorentzian, gaussian, pseudo_voigt, voigt, fano)
 
 function _n_peak_params(model::Function)
     if model in (lorentzian, gaussian)
         return 3
-    elseif model in (pseudo_voigt, fano)
+    elseif model in (pseudo_voigt, voigt, fano)
         return 4
     else
         error("Unknown model. Provide n_peak_params manually.")
@@ -42,6 +44,8 @@ function _peak_param_names(model::Function)
         return [:amplitude, :center, :sigma]
     elseif model === pseudo_voigt
         return [:amplitude, :center, :sigma, :mixing]
+    elseif model === voigt
+        return [:amplitude, :center, :sigma, :gamma]
     elseif model === fano
         return [:amplitude, :center, :width, :q]
     else
@@ -54,7 +58,7 @@ function _width_guess(fwhp::Real, model::Function)
         return fwhp
     elseif model === gaussian
         return fwhp / (2 * sqrt(2 * log(2)))
-    elseif model === pseudo_voigt
+    elseif model in (pseudo_voigt, voigt)
         return fwhp / 2
     elseif model === fano
         return fwhp
@@ -80,6 +84,8 @@ function _peaks_to_p0(detected::Vector{PeakInfo}, x, y, model::Function; baselin
         if npp >= 4
             if model === pseudo_voigt
                 p0[offset + 4] = 0.5
+            elseif model === voigt
+                p0[offset + 4] = pk.width / 4  # γ: small Lorentzian width relative to peak
             elseif model === fano
                 p0[offset + 4] = 1.0  # q = 1 (moderate asymmetry, |q| -> Inf is Lorentzian)
             end
