@@ -448,7 +448,9 @@ function fit_map(m::PLMap;
                  pixel_range::Union{Tuple{Int,Int}, Nothing} = nothing,
                  exclude = nothing,
                  abort::Union{Threads.Atomic{Bool}, Nothing} = nothing,
-                 progress::Union{Function, Nothing} = nothing)
+                 progress::Union{Function, Nothing} = nothing,
+                 ref_r2_threshold::Real = 0.80,
+                 n_ref_candidates::Int = 5)
 
     nx, ny = length(m.x), length(m.y)
     results = Matrix{Any}(nothing, nx, ny)
@@ -487,26 +489,28 @@ function fit_map(m::PLMap;
         return x, y
     end
 
-    # Fit reference pixel (brightest included) to seed initial parameters
+    # Fit reference pixel to seed initial parameters.
+    # Try the top-N brightest candidates and use the first with R² above threshold.
+    # This avoids poisoning the seed with a CR-contaminated or anomalous pixel.
     p0_ref = nothing
     if !isempty(pixels_to_fit)
-        ref_ix, ref_iy = pixels_to_fit[1]
-        best_intensity = -Inf
-        for (ix, iy) in pixels_to_fit
-            val = m.intensity[ix, iy]
-            if val > best_intensity
-                best_intensity = val
-                ref_ix, ref_iy = ix, iy
+        sorted_by_intensity = sort(pixels_to_fit,
+                                   by=(p -> m.intensity[p[1], p[2]]),
+                                   rev=true)
+        n_cand = min(n_ref_candidates, length(sorted_by_intensity))
+
+        for (ref_ix, ref_iy) in sorted_by_intensity[1:n_cand]
+            try
+                x, y = _extract_and_crop(ref_ix, ref_iy)
+                ref_result = fit_peaks(x, y; model=model, n_peaks=n_peaks,
+                                       baseline_order=baseline_order)
+                if ref_result.r_squared >= ref_r2_threshold
+                    results[ref_ix, ref_iy] = ref_result
+                    p0_ref = ref_result._coef
+                    break
+                end
+            catch
             end
-        end
-        try
-            x, y = _extract_and_crop(ref_ix, ref_iy)
-            ref_result = fit_peaks(x, y; model=model, n_peaks=n_peaks,
-                                   baseline_order=baseline_order)
-            results[ref_ix, ref_iy] = ref_result
-            p0_ref = ref_result._coef
-        catch
-            # Reference fit failed; proceed without seeding
         end
     end
 
