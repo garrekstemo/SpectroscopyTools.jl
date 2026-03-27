@@ -1,15 +1,10 @@
 version: 2
 updates:
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: github-actions
+    directory: /
     schedule:
-      interval: "monthly"
-  - package-ecosystem: "julia"
-    directories:
-      - "/"
+      interval: weekly
+  - package-ecosystem: julia
+    directory: /
     schedule:
-      interval: "weekly"
-    groups:
-      all-julia-packages:
-        patterns:
-          - "*"
+      interval: weekly
