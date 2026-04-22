@@ -6,9 +6,9 @@
 [![Aqua QA](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
 [![codecov](https://codecov.io/gh/garrekstemo/SpectroscopyTools.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/garrekstemo/SpectroscopyTools.jl)
 
-A general-purpose spectroscopy analysis toolkit for Julia.
+**Spectroscopy analysis for Julia — steady-state and ultrafast.**
 
-SpectroscopyTools provides peak fitting, baseline correction, exponential decay fitting with IRF deconvolution, chirp correction, and unit conversions for spectroscopic data. While it works with any spectroscopy discipline (FTIR, Raman, UV-vis, fluorescence), there is an emphasis on ultrafast spectroscopy, including transient absorption data types, global analysis with decay-associated spectra, and chirp correction.
+For steady-state work, SpectroscopyTools provides peak fitting (Gaussian, Lorentzian, Voigt, Fano), baseline correction, peak detection, spectral transforms (Kramers-Kronig, Tauc, Kubelka-Munk), and unit conversions for FTIR, Raman, and UV-vis data. For ultrafast work, it provides typed data structures (`TATrace`, `TASpectrum`, `TAMatrix`), global fitting with decay-associated spectra, IRF-convolved exponential fitting, and chirp correction for broadband pump-probe experiments.
 
 > **Note:** This package is currently being tested internally in our lab.
 
@@ -24,20 +24,25 @@ Pkg.add("SpectroscopyTools")
 ```julia
 using SpectroscopyTools
 
-# Fit peaks in a spectrum
-result = fit_peaks(wavenumber, absorbance, (2000, 2100))
-report(result)
-
-# Exponential decay fitting
+# --- Ultrafast: kinetics with IRF-convolved biexponential ---
 trace = TATrace(time, signal; wavelength=800.0)
 fit = fit_exp_decay(trace; n_exp=2, irf=true)
 report(fit)
 
-# Baseline correction
-result = correct_baseline(x, y; method=:arpls)
-y_corrected = result.y
+# --- Ultrafast: global fit across a TA matrix ---
+matrix = TAMatrix(time, wavelength, data)
+gfit = fit_global(matrix; n_exp=2)   # shared τ, decay-associated spectra
+spectra = das(gfit)                  # n_exp × n_wavelengths matrix
 
-# Unit conversions (with Unitful)
+# --- Steady-state: peak fitting (FTIR, Raman, UV-vis) ---
+result = fit_peaks(x, y, (2000, 2100))
+report(result)
+
+# --- Steady-state: baseline correction ---
+bl = correct_baseline(x, y; method=:arpls)
+y_corrected = bl.y
+
+# --- Unit conversions (with Unitful) ---
 wavelength_to_wavenumber(1500u"nm")
 decay_time_to_linewidth(1.0u"ps")
 ```
@@ -46,18 +51,19 @@ decay_time_to_linewidth(1.0u"ps")
 
 | Module | Description |
 |--------|-------------|
-| **Peak fitting** | Gaussian, Lorentzian, Voigt, Pseudo-Voigt, Fano via [CurveFit.jl](https://github.com/garrekstemo/CurveFit.jl) |
-| **TA spectrum fitting** | N-peak model with ESA/GSB/SE labels and sign convention |
-| **Peak detection** | Automatic peak finding with prominence filtering |
-| **Baseline correction** | arPLS, SNIP, rubber band, iModPoly, rolling ball |
+| **TA data types** | `TATrace`, `TASpectrum`, `TAMatrix` with semantic axis indexing (`m[λ=800]`, `m[t=1.0]`) |
 | **Exponential decay** | Single/multi-exponential with optional IRF convolution |
-| **Global fitting** | Shared parameters across multiple traces, decay-associated spectra |
+| **Global fitting** | Shared parameters across traces, decay-associated spectra |
+| **TA spectrum fitting** | N-peak model with ESA/GSB/SE labels and sign convention |
 | **Chirp correction** | GVD detection (cross-correlation, threshold) and correction for broadband TA |
 | **SVD filtering** | Matrix denoising for broadband TA data |
-| **PL/Raman mapping** | Spatial maps, peak fitting, cosmic ray detection and removal |
+| **Peak fitting** | Gaussian, Lorentzian, Voigt, Pseudo-Voigt, Fano via [CurveFit.jl](https://github.com/garrekstemo/CurveFit.jl) |
+| **Peak detection** | Automatic peak finding with prominence filtering |
+| **Baseline correction** | arPLS, SNIP, rubber band, iModPoly, rolling ball |
 | **Spectral math** | Smoothing, derivatives, band area, normalization, spectral arithmetic |
 | **Transforms** | Kramers-Kronig, Kubelka-Munk, Tauc plot, SNV, Urbach tail |
 | **Unit conversions** | Wavenumber, wavelength, energy, linewidth interconversion |
+| **PL/Raman mapping** | Spatial maps, peak fitting, cosmic ray detection and removal |
 
 ## Data Types
 
