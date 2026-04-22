@@ -12,10 +12,10 @@ makedocs(
     pages = [
         "Home" => "index.md",
         "Tutorials" => [
+            "Chirp Correction (TA)" => "tutorials/chirp_correction.md",
             "Peak Fitting (FTIR)" => "tutorials/ftir_peak_fitting.md",
             "Peak Fitting (Raman)" => "tutorials/raman_peak_fitting.md",
             "PL / Raman Map Analysis" => "tutorials/plmap_analysis.md",
-            "Chirp Correction" => "tutorials/chirp_correction.md",
         ],
         "How-To Guides" => [
             "Tune Peak Detection Sensitivity" => "howto/peak_detection_sensitivity.md",
