@@ -42,4 +42,5 @@ makedocs(
 
 deploydocs(
     repo = "github.com/garrekstemo/SpectroscopyTools.jl.git",
+    push_preview = true,
 )
