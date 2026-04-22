@@ -57,7 +57,7 @@ y_corrected = bl.y
 
 # Unit conversions
 wavelength_to_wavenumber(1500u"nm")  # -> wavenumber in cm⁻¹
-decay_time_to_linewidth(1.0u"ps")    # -> linewidth in cm⁻¹
+decay_time_to_linewidth(1.0u"ps")    # -> linewidth in meV (default output unit)
 ```
 
 ## Package Overview
