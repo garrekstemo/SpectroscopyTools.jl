@@ -265,6 +265,20 @@ function fit_peaks(x::AbstractVector, y::AbstractVector;
     )
 end
 
+# Dispatch for raw vectors with a fit region. Restricts data to `region` then
+# delegates to the 2-argument core.
+function fit_peaks(x::AbstractVector, y::AbstractVector, region::Tuple{Real, Real}; kwargs...)
+    length(x) == length(y) || throw(ArgumentError("x and y must have same length"))
+
+    mask = region[1] .<= x .<= region[2]
+    x_r = x[mask]
+    y_r = y[mask]
+
+    length(x_r) < 10 && error("Region $(region) contains only $(length(x_r)) points. Need at least 10.")
+
+    return fit_peaks(x_r, y_r; kwargs...)
+end
+
 # Dispatch for AbstractSpectroscopyData with region
 function fit_peaks(spec::AbstractSpectroscopyData, region::Tuple{Real, Real}; kwargs...)
     x_full = xdata(spec)
@@ -307,6 +321,14 @@ function predict(r::MultiPeakFitResult, x::AbstractVector)
     return composite(r._coef, collect(Float64, x))
 end
 
+"""
+    predict_peak(result::MultiPeakFitResult, i::Int) -> Vector
+    predict_peak(result::MultiPeakFitResult, i::Int, x::AbstractVector) -> Vector
+
+Evaluate the `i`-th peak of a multi-peak fit, excluding the baseline. Without `x`,
+the peak is evaluated on the original fit region. Pass a custom `x` to evaluate
+elsewhere (e.g., for plotting on a wider range).
+"""
 function predict_peak(r::MultiPeakFitResult, i::Int)
     return predict_peak(r, i, r._x)
 end
@@ -319,6 +341,14 @@ function predict_peak(r::MultiPeakFitResult, i::Int, x::AbstractVector)
     return r._peak_fn(peak_params, collect(Float64, x))
 end
 
+"""
+    predict_baseline(result::MultiPeakFitResult) -> Vector
+    predict_baseline(result::MultiPeakFitResult, x::AbstractVector) -> Vector
+
+Evaluate the polynomial baseline component of a multi-peak fit. Without `x`,
+the baseline is evaluated on the original fit region. Pass a custom `x` to
+evaluate on a different range.
+"""
 function predict_baseline(r::MultiPeakFitResult)
     return _eval_baseline(r._coef, r._x, length(r.peaks), r._n_peak_params, r.baseline_order)
 end
