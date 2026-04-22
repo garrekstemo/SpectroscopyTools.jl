@@ -50,6 +50,14 @@ GlobalFitResult
 das
 ```
 
+## Reporting
+
+`report(result)` prints a formatted summary to the terminal; `format_results(result)` returns the same content as a Markdown string suitable for composing into lab-notebook entries (e.g. the body of an eLabFTW experiment).
+
+```@docs
+format_results
+```
+
 ## Spectroscopy Utilities
 
 ```@docs

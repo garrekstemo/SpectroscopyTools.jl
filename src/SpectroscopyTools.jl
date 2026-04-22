@@ -66,7 +66,7 @@ export TAPeak, TASpectrumFit, anharmonicity, das
 export fit_exp_decay, fit_global
 export fit_peaks, predict_peak, predict_baseline
 export fit_ta_spectrum
-export report, polynomial
+export report, format_results, polynomial
 
 # ==========================================================================
 # Exports — Chirp correction
