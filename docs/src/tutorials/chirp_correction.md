@@ -198,4 +198,4 @@ save_chirp("chirp_calibration.json", cal)
 
 ## API Reference
 
-See the [API Reference](@ref chirp-api) page for full docstrings of all chirp functions.
+See the [Additional API Reference](@ref api-reference) page for full docstrings of all chirp functions.

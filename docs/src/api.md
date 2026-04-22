@@ -1,24 +1,32 @@
-# [API Reference](@id api-reference)
+# [Additional API Reference](@id api-reference)
 
-## Types
+This page collects exported names that aren't covered by the grouped reference pages (peak detection, peak fitting, baseline correction, preprocessing, PL/Raman mapping).
+
+## Module
 
 ```@docs
 SpectroscopyTools.SpectroscopyTools
+```
+
+## Transient Absorption Types
+
+```@docs
 AbstractSpectroscopyData
 TATrace
 TASpectrum
 TAMatrix
 TASpectrumFit
 TAPeak
+fit_ta_spectrum
+anharmonicity
 ```
 
-## [Chirp Correction](@id chirp-api)
+## Chirp Correction
 
 ```@docs
 ChirpCalibration
 detect_chirp
 correct_chirp
-subtract_background
 polynomial
 save_chirp
 load_chirp
@@ -31,44 +39,6 @@ svd_filter
 singular_values
 ```
 
-## Cosmic Ray Detection
-
-```@docs
-CosmicRayResult
-CosmicRayMapResult
-detect_cosmic_rays
-remove_cosmic_rays
-```
-
-## PL / Raman Mapping
-
-```@docs
-PLMap
-extract_spectrum
-integrated_intensity
-intensity_mask
-peak_centers
-normalize_intensity
-```
-
-## Peak Fitting
-
-```@docs
-fit_peaks
-fit_ta_spectrum
-MultiPeakFitResult
-PeakFitResult
-anharmonicity
-```
-
-## Peak Detection
-
-```@docs
-PeakInfo
-find_peaks
-peak_table
-```
-
 ## Exponential Decay Fitting
 
 ```@docs
@@ -78,27 +48,13 @@ ExpDecayFit
 MultiexpDecayFit
 GlobalFitResult
 das
-report
-```
-
-## Baseline Correction
-
-```@docs
-arpls_baseline
-snip_baseline
-rubberband_baseline
-imodpoly_baseline
-rolling_ball_baseline
-correct_baseline
 ```
 
 ## Spectroscopy Utilities
 
 ```@docs
 normalize
-smooth_data
 calc_fwhm
-subtract_spectrum
 transmittance_to_absorbance
 absorbance_to_transmittance
 npoints
