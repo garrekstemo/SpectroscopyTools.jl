@@ -55,7 +55,7 @@ report(fit)
 # --- Ultrafast: global fit across a TA matrix ---
 matrix = TAMatrix(time, wavelength, data)
 gfit = fit_global(matrix; n_exp=2)   # shared τ, decay-associated spectra
-das = gfit.das
+spectra = das(gfit)                   # n_exp × n_wavelengths matrix
 
 # --- Steady-state: peak fitting (FTIR, Raman, UV-vis) ---
 result = fit_peaks(x, y, (2000, 2100))
