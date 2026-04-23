@@ -1509,15 +1509,33 @@ Random.seed!(42)
         @test mn isa PLMap
         @test minimum(mn.intensity) ≈ 0.0
         @test maximum(mn.intensity) ≈ 1.0
+        @test mn.spectra === m.spectra  # normalize leaves spectra untouched
 
         # subtract_background (auto)
         mb = subtract_background(m)
         @test mb isa PLMap
+        @test size(mb.spectra) == size(m.spectra)
+        @test size(mb.intensity) == size(m.intensity)
+        @test mb.x === m.x && mb.y === m.y && mb.pixel === m.pixel
         @test mb.spectra != m.spectra
 
-        # subtract_background (explicit)
-        mb2 = subtract_background(m; positions=[(x[1], y[1]), (x[end], y[1])])
+        # subtract_background with explicit margin
+        mb_margin = subtract_background(m; margin=1)
+        @test mb_margin isa PLMap
+        @test mb_margin.spectra != mb.spectra  # different margin → different result
+
+        # subtract_background (explicit positions) — bg positions see reduced signal
+        bg_positions = [(x[1], y[1]), (x[end], y[1]), (x[1], y[end])]
+        mb2 = subtract_background(m; positions=bg_positions)
         @test mb2 isa PLMap
+        bg_before = extract_spectrum(m; x=bg_positions[1][1], y=bg_positions[1][2])
+        bg_after = extract_spectrum(mb2; x=bg_positions[1][1], y=bg_positions[1][2])
+        @test abs(sum(bg_after.signal)) < abs(sum(bg_before.signal))
+
+        # normalize chains cleanly with subtract_background
+        mn_bg = normalize_intensity(mb)
+        @test minimum(mn_bg.intensity) ≈ 0.0
+        @test maximum(mn_bg.intensity) ≈ 1.0
 
         # peak_centers
         centers = peak_centers(m)
@@ -1529,6 +1547,15 @@ Random.seed!(42)
         centers0 = peak_centers(m; threshold=0)
         @test count(isnan, centers0) <= count(isnan, centers)
 
+        # peak_centers: more cells mask to NaN after bg subtraction (corners drop near 0)
+        centers_bg = peak_centers(mb)
+        @test count(isnan, centers_bg) >= count(isnan, centers)
+
+        # peak_centers with explicit pixel_range kwarg — centroids stay in range
+        centers_range = peak_centers(m; pixel_range=(5, 15))
+        valid_range = filter(!isnan, centers_range)
+        @test all(c -> 5 <= c <= 15, valid_range)
+
         # show methods
         buf = IOBuffer()
         show(buf, m)
@@ -1537,6 +1564,34 @@ Random.seed!(42)
         buf2 = IOBuffer()
         show(buf2, MIME("text/plain"), m)
         @test occursin("PLMap", String(take!(buf2)))
+    end
+
+    @testset "PLMap pixel_range metadata propagation" begin
+        # Build a PLMap where metadata records a specific pixel_range — this mimics
+        # what a file loader does when called with `pixel_range=(p1, p2)`. Operations
+        # like subtract_background should honor this range when recomputing intensity.
+        nx, ny, np = 5, 5, 30
+        spectra = rand(nx, ny, np)
+        # Put a Gaussian peak around pixel 15, centered spatially
+        for ix in 2:4, iy in 2:4, k in 1:np
+            spectra[ix, iy, k] += 5.0 * exp(-((k - 15)^2) / 4)
+        end
+        pixel = collect(1.0:np)
+        x = collect(range(-2.0, 2.0, length=nx))
+        y = collect(range(-2.0, 2.0, length=ny))
+
+        # Intensity integrated over a restricted pixel range
+        p1, p2 = 10, 20
+        int_matrix = dropdims(sum(spectra[:, :, p1:p2]; dims=3); dims=3)
+        meta = Dict{String,Any}("source_file" => "synthetic.lvm",
+                                 "nx" => nx, "ny" => ny,
+                                 "pixel_range" => (p1, p2))
+        m = PLMap(int_matrix, spectra, x, y, pixel, meta)
+
+        # subtract_background should recompute intensity using the same pixel_range
+        mb = subtract_background(m)
+        expected = dropdims(sum(mb.spectra[:, :, p1:p2]; dims=3); dims=3)
+        @test mb.intensity ≈ expected
     end
 
     @testset "Cosmic ray detection" begin
