@@ -6,9 +6,9 @@ using SpectroscopyTools, JASCOFiles, GLMakie
 src  = joinpath(@__DIR__, "data", "raman_mose2_synthetic.csv")
 spec = JASCOSpectrum(src)
 
-# Optional cosmic-ray removal — disabled here because the 1D detector
-# (Whitaker–Hayes z-score) flags sharp Raman peaks like MoSe2 A1g as spikes.
-# y = remove_cosmic_rays(spec.y, detect_cosmic_rays(spec.y; threshold=5.0))
+# Optional cosmic-ray removal
+# crs = detect_cosmic_rays(spec.y; threshold=5.0)
+# y = remove_cosmic_rays(spec.y, crs)
 
 # 1. ARPLS baseline
 y_corr = correct_baseline(spec.x, spec.y; method=:arpls, λ=1e5).y
