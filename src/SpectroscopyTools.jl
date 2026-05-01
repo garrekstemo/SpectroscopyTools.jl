@@ -123,4 +123,10 @@ export coef, residuals, predict, fitted, stderror, confint, rss, mse, nobs, isco
 export gaussian, lorentzian, pseudo_voigt, single_exponential
 export fano, voigt, log_normal
 
+# ==========================================================================
+# Plotting — methods live in SpectroscopyToolsMakieExt (loaded with Makie)
+# ==========================================================================
+function plot_fit end
+export plot_fit
+
 end # module SpectroscopyTools
